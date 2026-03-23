@@ -1,2 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.0.0
 opencv-python
 mediapipe==0.10.14
