@@ -7,7 +7,9 @@ import numpy as np
 mp_holistic = mp.solutions.holistic
 
 def extract_keypoints(cap, holistic):
-    frame_keypoints = []
+    poses = []
+    left_hands = []
+    right_hands = []
     while cap.isOpened():
       ret, image = cap.read()
       if ret:
@@ -31,9 +33,12 @@ def extract_keypoints(cap, holistic):
         else:
             right_hand = np.zeros((21,3))
 
-        frame_keypoints.append([pose, left_hand, right_hand])
+        poses.append(pose)
+        left_hands.append(left_hand)
+        right_hands.append(right_hand)
+
       else:
-          return frame_keypoints
+          return [poses, left_hands, right_hands]
 
 def reconstruct_video_from_keypoints(keypoints, save_dir: str, filename: str, fps: float = 30.0, height: int = 720, width: int = 1280):
   os.makedirs(save_dir, exist_ok=True)
@@ -41,11 +46,10 @@ def reconstruct_video_from_keypoints(keypoints, save_dir: str, filename: str, fp
 
   fourcc = cv2.VideoWriter_fourcc(*'mp4v')
   out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
-
-  for frame_keypoints in keypoints:
+  poses, left_hands, right_hands = keypoints
+  for pose, left_hand, right_hand in zip(poses, left_hands, right_hands):
     try:
       canvas = np.zeros((height, width, 3), dtype=np.uint8)
-      pose, left_hand, right_hand = frame_keypoints
 
       pose = pose[:, :2] * [width, height]
       left_hand = left_hand[:, :2] * [width, height]
@@ -74,3 +78,12 @@ def draw_landmarks_from_coordinates(image, keypoints, connections, dot_color=(0,
         cv2.circle(image, pos, dot_radius, dot_color, -1)
 
     return image
+
+def save_keypoints(keypoints, save_dir: str, filename: str):
+    folder_name = os.path.splitext(filename)[0]
+    folder_path = os.path.join(save_dir, folder_name)
+    os.makedirs(folder_path, exist_ok=True)
+    pose, left_hand, right_hand = keypoints
+    np.save(os.path.join(folder_path, 'pose.npy'), pose)
+    np.save(os.path.join(folder_path, 'left_hand.npy'), left_hand)
+    np.save(os.path.join(folder_path, 'right_hand.npy'), right_hand)

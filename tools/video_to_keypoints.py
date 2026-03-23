@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import mediapipe as mp
 
-from utils.keypoint_utils import extract_keypoints, reconstruct_video_from_keypoints
+from utils.keypoint_utils import extract_keypoints, reconstruct_video_from_keypoints, save_keypoints
 
 data_dir = "data/"
 source_dir = os.path.join(data_dir, "videos/")
@@ -25,6 +25,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=
             cap = cv2.VideoCapture(str(file))
             results = extract_keypoints(cap, holistic)
             reconstruct_video_from_keypoints(results, save_dir=str(Path(reconstructed_dir) / child.name), filename=file.name)
+            save_keypoints(results, save_dir=str(Path(save_dir) / child.name), filename=file.name)
           except Exception as e:
             print(f"Error processing {file}: {e}")
           finally:
