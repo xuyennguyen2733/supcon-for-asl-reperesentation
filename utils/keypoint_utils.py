@@ -47,6 +47,11 @@ def reconstruct_video_from_keypoints(keypoints, save_dir: str, filename: str, fp
   fourcc = cv2.VideoWriter_fourcc(*'mp4v')
   out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
   poses, left_hands, right_hands = keypoints
+
+  # Filter pose connections to only include indices within the pose array
+  num_pose_kps = len(poses[0]) if len(poses) > 0 else 33
+  pose_connections = [(a, b) for a, b in mp_holistic.POSE_CONNECTIONS if a < num_pose_kps and b < num_pose_kps]
+
   for pose, left_hand, right_hand in zip(poses, left_hands, right_hands):
     try:
       canvas = np.zeros((height, width, 3), dtype=np.uint8)
@@ -55,7 +60,7 @@ def reconstruct_video_from_keypoints(keypoints, save_dir: str, filename: str, fp
       left_hand = left_hand[:, :2] * [width, height]
       right_hand = right_hand[:, :2] * [width, height]
 
-      canvas = draw_landmarks_from_coordinates(canvas, pose, mp_holistic.POSE_CONNECTIONS)
+      canvas = draw_landmarks_from_coordinates(canvas, pose, pose_connections)
       canvas = draw_landmarks_from_coordinates(canvas, left_hand, mp_holistic.HAND_CONNECTIONS)
       canvas = draw_landmarks_from_coordinates(canvas, right_hand, mp_holistic.HAND_CONNECTIONS)
       out.write(canvas)
@@ -78,6 +83,20 @@ def draw_landmarks_from_coordinates(image, keypoints, connections, dot_color=(0,
         cv2.circle(image, pos, dot_radius, dot_color, -1)
 
     return image
+
+def normalize_keypoints(keypoints):
+    """Normalize extracted keypoints. Crops pose to upper body only (23 keypoints).
+
+    Args:
+        keypoints: [poses, left_hands, right_hands] where each is a list of arrays.
+
+    Returns:
+        [poses, left_hands, right_hands] with pose cropped to indices 0-22.
+    """
+    poses, left_hands, right_hands = keypoints
+    poses = [pose[:23] for pose in poses]
+    return [poses, left_hands, right_hands]
+
 
 def save_keypoints(keypoints, save_dir: str, filename: str):
     folder_name = os.path.splitext(filename)[0]
