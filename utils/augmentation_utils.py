@@ -42,19 +42,24 @@ def flip_horizontal(pose, left_hand, right_hand, rng=None):
     return flip_y(pose), flip_y(right_hand), flip_y(left_hand)
 
 
-def random_speed_change(pose, left_hand, right_hand, rng=None):
+def random_speed_change(pose, left_hand, right_hand, rng=None, fps=25):
     """Simulate speed variation by resampling to a different number of frames.
 
-    speed_factor > 1: fewer output frames (motion plays faster)
-    speed_factor < 1: more output frames (motion plays slower)
-    Output length varies — temporal padding handles batching later.
+    speed_factor > 1: fewer output frames (motion plays faster, up to 4x)
+    speed_factor < 1: more output frames (motion plays slower, down to 0.25x)
+    Output is clamped to [1s, 4s] duration at the given fps.
     """
     if rng is None:
         rng = np.random.default_rng()
 
     T = pose.shape[0]
-    speed_factor = rng.uniform(1, 4)
-    out_T = max(4, int(T / speed_factor))
+    speed_factor = rng.uniform(0.25, 4.0)
+    out_T = int(T / speed_factor)
+
+    # Clamp to [1s, 4s] at the given fps
+    min_frames = fps * 1    # 1 second
+    max_frames = fps * 4    # 4 seconds
+    out_T = max(min_frames, min(out_T, max_frames))
 
     # Sample out_T evenly-spaced points from the original T frames
     source_indices = np.linspace(0, T - 1, out_T)

@@ -6,8 +6,8 @@ import numpy as np
 from utils.keypoint_utils import reconstruct_video_from_keypoints
 from utils.augmentation_utils import random_augment
 
-keypoints_dir = Path("data", "keypoints")
-output_dir = Path("data", "augmented_renders")
+keypoints_dir = Path("data", "keypoints", "train")
+output_dir = Path("data", "augmented_renders", "train")
 
 for label_dir in sorted(keypoints_dir.iterdir()):
     if not label_dir.is_dir():
