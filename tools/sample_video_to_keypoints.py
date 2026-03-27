@@ -6,7 +6,7 @@ import mediapipe as mp
 
 from utils.keypoint_utils import extract_keypoints, normalize_keypoints, reconstruct_video_from_keypoints, save_keypoints
 
-data_dir = "data/"
+data_dir = "data/samples/"
 source_dir = os.path.join(data_dir, "videos/")
 save_dir = os.path.join(data_dir, "keypoints/")
 reconstructed_dir = os.path.join(data_dir, "keypoint_renders/")
