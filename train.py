@@ -36,14 +36,17 @@ class ASLKeypointDataset(Dataset):
         pose = temporal_resample(pose, self.target_frames)
         left_hand = temporal_resample(left_hand, self.target_frames)
         right_hand = temporal_resample(right_hand, self.target_frames)
-
-        body_tokens, left_tokens, right_tokens = form_pose_triplet_units(pose, left_hand, right_hand)
+        
+        T = pose.shape[0]
+        body_flattened = pose.reshape(T, -1)         # (T, 99)
+        left_flattened = left_hand.reshape(T, -1)    # (T, 63)
+        right_flattened = right_hand.reshape(T, -1)  # (T, 63)
 
         # (T, 3, max_keypoints*3) — pad to uniform dim so they can stack
         # body=69, left=63, right=63 -> pad left/right to 69
-        left_padded = np.pad(left_tokens, ((0, 0), (0, 69 - 63)))
-        right_padded = np.pad(right_tokens, ((0, 0), (0, 69 - 63)))
-        tokens = np.stack([body_tokens, left_padded, right_padded], axis=1)
+        left_padded = np.pad(left_flattened, ((0, 0), (0, 69 - 63)))
+        right_padded = np.pad(right_flattened, ((0, 0), (0, 69 - 63)))
+        tokens = np.stack([body_flattened, left_padded, right_padded], axis=1)
 
         return torch.tensor(tokens, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
