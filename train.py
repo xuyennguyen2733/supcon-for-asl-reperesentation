@@ -7,7 +7,9 @@ from utils.data_utils import form_pose_triplet_units
 from utils.augmentation_utils import random_augment
 from models.encoder import SignLanguageEncoder
 
-KEYPOINTS_DIR = os.path.join('data', 'keypoints')
+train_dir = os.path.join('data', 'keypoints', 'train')
+test_dir = os.path.join('data', 'keypoints', 'test')
+val_dir = os.path.join('data', 'keypoints', 'val')
 
 
 class ASLKeypointDataset(Dataset):
@@ -57,8 +59,38 @@ class ASLKeypointDataset(Dataset):
             return self._to_tokens(pose, left_hand, right_hand), label_tensor
 
 
+def _pad_sequences(sequences):
+    """Pad a list of (T, 3, 69) tensors to (B, max_T, 3, 69) with a boolean mask."""
+    max_T = max(s.shape[0] for s in sequences)
+    B = len(sequences)
+    padded = torch.zeros(B, max_T, sequences[0].shape[1], sequences[0].shape[2])
+    mask = torch.ones(B, max_T, dtype=torch.bool)  # True = padded (ignored by transformer)
+
+    for i, s in enumerate(sequences):
+        T = s.shape[0]
+        padded[i, :T] = s
+        mask[i, :T] = False
+
+    return padded, mask
+
+
+def collate_augmented(batch):
+    """Collate variable-length augmented samples: returns (v1, mask1, v2, mask2, labels)."""
+    views1, views2, labels = zip(*batch)
+    tokens1, mask1 = _pad_sequences(views1)
+    tokens2, mask2 = _pad_sequences(views2)
+    return tokens1, mask1, tokens2, mask2, torch.stack(labels)
+
+
+def collate_eval(batch):
+    """Collate variable-length eval samples: returns (tokens, mask, labels)."""
+    views, labels = zip(*batch)
+    tokens, mask = _pad_sequences(views)
+    return tokens, mask, torch.stack(labels)
+
+
 if __name__ == '__main__':
-    dataset = ASLKeypointDataset(KEYPOINTS_DIR, augment=True)
+    dataset = ASLKeypointDataset(train_dir, augment=True)
     print(f"Dataset size: {len(dataset)}")
     print(f"Labels: {dataset.labels}")
 
@@ -67,9 +99,9 @@ if __name__ == '__main__':
     print(f"View 2 shape: {view2.shape}")
     print(f"Sample label: {label}")
 
-    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
-    for batch_v1, batch_v2, batch_labels in dataloader:
-        print(f"    Batch view 1 shape: {batch_v1.shape}")
-        print(f"    Batch view 2 shape: {batch_v2.shape}")
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_augmented)
+    for batch_v1, mask1, batch_v2, mask2, batch_labels in dataloader:
+        print(f"    Batch view 1: {batch_v1.shape}, mask: {mask1.shape}")
+        print(f"    Batch view 2: {batch_v2.shape}, mask: {mask2.shape}")
         print(f"    Batch labels: {batch_labels}")
         break
