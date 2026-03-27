@@ -3,16 +3,16 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from utils.data_utils import form_pose_triplet_units, temporal_resample
+from utils.data_utils import form_pose_triplet_units
+from utils.augmentation_utils import random_augment
 from models.encoder import SignLanguageEncoder
 
 KEYPOINTS_DIR = os.path.join('data', 'keypoints')
-TARGET_FRAMES = 32
 
 
 class ASLKeypointDataset(Dataset):
-    def __init__(self, keypoints_dir, target_frames=TARGET_FRAMES):
-        self.target_frames = target_frames
+    def __init__(self, keypoints_dir, augment=True):
+        self.augment = augment
         self.labels = sorted(os.listdir(keypoints_dir))
         self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
         self.samples = []
@@ -27,41 +27,49 @@ class ASLKeypointDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        sample_dir, label = self.samples[idx]
+    def _load(self, sample_dir):
         pose = np.load(os.path.join(sample_dir, 'pose.npy'))
         left_hand = np.load(os.path.join(sample_dir, 'left_hand.npy'))
         right_hand = np.load(os.path.join(sample_dir, 'right_hand.npy'))
+        return pose, left_hand, right_hand
 
-        pose = temporal_resample(pose, self.target_frames)
-        left_hand = temporal_resample(left_hand, self.target_frames)
-        right_hand = temporal_resample(right_hand, self.target_frames)
-        
+    def _to_tokens(self, pose, left_hand, right_hand):
         T = pose.shape[0]
-        body_flattened = pose.reshape(T, -1)         # (T, 99)
-        left_flattened = left_hand.reshape(T, -1)    # (T, 63)
-        right_flattened = right_hand.reshape(T, -1)  # (T, 63)
+        body_flat = pose.reshape(T, -1)
+        left_flat = left_hand.reshape(T, -1)
+        right_flat = right_hand.reshape(T, -1)
 
-        # (T, 3, max_keypoints*3) — pad to uniform dim so they can stack
-        # body=69, left=63, right=63 -> pad left/right to 69
-        left_padded = np.pad(left_flattened, ((0, 0), (0, 69 - 63)))
-        right_padded = np.pad(right_flattened, ((0, 0), (0, 69 - 63)))
-        tokens = np.stack([body_flattened, left_padded, right_padded], axis=1)
+        left_padded = np.pad(left_flat, ((0, 0), (0, 69 - 63)))
+        right_padded = np.pad(right_flat, ((0, 0), (0, 69 - 63)))
+        tokens = np.stack([body_flat, left_padded, right_padded], axis=1)
+        return torch.tensor(tokens, dtype=torch.float32)
 
-        return torch.tensor(tokens, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+    def __getitem__(self, idx):
+        sample_dir, label = self.samples[idx]
+        pose, left_hand, right_hand = self._load(sample_dir)
+        label_tensor = torch.tensor(label, dtype=torch.long)
+
+        if self.augment:
+            view1 = self._to_tokens(*random_augment(pose, left_hand, right_hand))
+            view2 = self._to_tokens(*random_augment(pose, left_hand, right_hand))
+            return view1, view2, label_tensor
+        else:
+            return self._to_tokens(pose, left_hand, right_hand), label_tensor
 
 
 if __name__ == '__main__':
-    dataset = ASLKeypointDataset(KEYPOINTS_DIR)
+    dataset = ASLKeypointDataset(KEYPOINTS_DIR, augment=True)
     print(f"Dataset size: {len(dataset)}")
     print(f"Labels: {dataset.labels}")
 
-    tokens, label = dataset[0]
-    print(f"Sample tokens shape: {tokens.shape}")
+    view1, view2, label = dataset[0]
+    print(f"View 1 shape: {view1.shape}")
+    print(f"View 2 shape: {view2.shape}")
     print(f"Sample label: {label}")
 
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
-    for batch_tokens, batch_labels in dataloader:
-        print(f"    Batch tokens shape: {batch_tokens.shape}")
+    for batch_v1, batch_v2, batch_labels in dataloader:
+        print(f"    Batch view 1 shape: {batch_v1.shape}")
+        print(f"    Batch view 2 shape: {batch_v2.shape}")
         print(f"    Batch labels: {batch_labels}")
         break
