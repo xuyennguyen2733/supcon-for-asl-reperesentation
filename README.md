@@ -103,7 +103,7 @@ The experiments are designed to isolate the contribution of the two core ideas o
 
 ### Experiment Design
 
-**Core 2x2 grid** — isolates each contribution independently and combined:
+**Core 2x2 grid** -- isolates each contribution independently and combined:
 
 | # | Experiment | Tokenization | Loss | Tests |
 |---|---|---|---|---|
@@ -112,7 +112,7 @@ The experiments are designed to isolate the contribution of the two core ideas o
 | 3 | Triplet + CE | Pose-Triplet | CE | Triplet contribution alone |
 | 4 | Triplet + SupCon + CE | Pose-Triplet | SupCon + CE | **Proposed method** |
 
-**Enhancements** — further improvements on the proposed method:
+**Enhancements** -- further improvements on the proposed method:
 
 | # | Experiment | Addition | Tests |
 |---|---|---|---|
@@ -163,7 +163,7 @@ python train.py --use_rope \
 
 ### Running All Experiments with run.py
 
-`run.py` orchestrates all 7 experiments automatically. It detects available GPUs and parallelizes across them. With 1 GPU, experiments run sequentially in priority order (core 2x2 first, then enhancements).
+`run.py` orchestrates all 7 experiments automatically. It detects available GPUs and parallelizes across them. With 1 GPU, experiments run sequentially in priority order (core 2x2 first, then enhancements). Progress is printed to the console (every 10th epoch, new best models).
 
 ```bash
 # Run all 7 experiments
@@ -179,6 +179,10 @@ python run.py --only 1 2 3 4    # just the core 2x2 grid
 # Override epoch counts
 python run.py --epochs 50                    # shorter training
 python run.py --epochs 100 --pretrain_epochs 80  # more pre-training
+
+# Run in tmux (survives SSH disconnects, auto-stops RunPod when done)
+python run.py --tmux training
+python run.py --tmux training --only 1 4 5
 ```
 
 | Flag | Default | Description |
@@ -187,8 +191,11 @@ python run.py --epochs 100 --pretrain_epochs 80  # more pre-training
 | `--pretrain_epochs` | 50 | Pre-training epochs (experiments 6, 7) |
 | `--dry_run` | off | Print commands without executing |
 | `--only` | all | Run specific experiments by number (e.g. `--only 1 4 5`) |
+| `--tmux` | off | Run inside a named tmux session |
 
 **Multi-GPU behavior:** With N GPUs detected, up to N experiments run concurrently, each pinned to a separate GPU via `CUDA_VISIBLE_DEVICES`. Pre-training steps (experiments 6, 7) run automatically before their training step within the same job.
+
+**tmux + RunPod behavior:** When `--tmux` is set, the script launches in a detached tmux session that survives SSH disconnects. When all experiments finish (or crash), it prompts to stop the RunPod pod. If no response within 2 minutes, the pod auto-stops to prevent charges. User-initiated interrupts (Ctrl+C, `tmux kill-session`) do not stop the pod.
 
 **Output structure:**
 
@@ -209,4 +216,148 @@ experiments/trained_models/
     ├── pretrained_encoder.pt
     ├── best_model.pt
     └── train.log
+```
+
+## Evaluation
+
+### Evaluating a Single Model
+
+```bash
+python eval.py --checkpoint experiments/trained_models/4_triplet_supcon_ce/best_model.pt
+```
+
+Architecture flags must match what was used during training:
+
+```bash
+# Flat model
+python eval.py --checkpoint experiments/trained_models/1_flat_ce/best_model.pt --no-use_triplet
+
+# RoPE model
+python eval.py --checkpoint experiments/trained_models/5_triplet_rope_supcon_ce/best_model.pt --use_rope
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--checkpoint` | required | Path to `best_model.pt` |
+| `--use_triplet` / `--no-use_triplet` | on | Must match training architecture |
+| `--use_rope` | off | Must match training architecture |
+| `--batch_size` | 32 | Batch size for evaluation |
+
+**Metrics computed:**
+- **Top-1 and Top-5 accuracy** on the held-out test set
+- **Per-class accuracy** breakdown
+- **Intra/Inter-class distance ratio** -- measures embedding cluster quality (lower = tighter clusters, wider separation)
+- **t-SNE visualization** -- 2D projection of learned embeddings colored by class
+
+### Evaluating All Models with run_eval.py
+
+`run_eval.py` evaluates all trained models and produces comparison reports. Architecture flags are automatically inferred from folder names.
+
+```bash
+# Evaluate all models in experiments/trained_models/
+python run_eval.py
+
+# Evaluate specific checkpoints
+python run_eval.py --models path/to/model1/best_model.pt path/to/model2/best_model.pt
+
+# Preview what would be evaluated
+python run_eval.py --dry_run
+
+# Run in tmux with pod auto-stop
+python run_eval.py --tmux eval_session
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--models` | auto-discover | Explicit list of checkpoint paths |
+| `--batch_size` | 32 | Batch size |
+| `--dry_run` | off | List models without evaluating |
+| `--tmux` | off | Run in tmux session with pod auto-stop |
+
+**Per-model outputs** (in each experiment folder):
+
+| File | Format | Contents |
+|---|---|---|
+| `eval_results.json` | JSON | All metrics + per-class accuracy |
+| `predictions.csv` | CSV | Per-sample: true label, predicted label, correct, confidence, top-5 |
+| `tsne.png` | PNG | t-SNE embedding visualization |
+
+**Combined outputs** (in `experiments/`):
+
+| File | Format | Contents |
+|---|---|---|
+| `eval_summary.csv` | CSV | One row per model -- top-1, top-5, distance ratio (for graphing) |
+| `eval_report.md` | Markdown | Comparison tables, key deltas, per-class breakdown of best model |
+
+## Live Demo
+
+Real-time ASL sign recognition from webcam with skeleton overlay. Supports loading multiple models and comparing their predictions side by side with inference timing.
+
+```bash
+# Skeleton visualization only (no model needed)
+python demo.py
+
+# Single model
+python demo.py --checkpoint experiments/trained_models/4_triplet_supcon_ce/best_model.pt
+
+# Compare all trained models side by side
+python demo.py --checkpoints experiments/trained_models/*/best_model.pt
+
+# Compare specific models
+python demo.py --checkpoints experiments/trained_models/1_flat_ce/best_model.pt \
+                              experiments/trained_models/4_triplet_supcon_ce/best_model.pt
+
+# Smoke test: preview the UI with fake models (no trained models needed)
+python demo.py --smoke_test        # 7 fake models
+python demo.py --smoke_test 3      # 3 fake models
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--checkpoint` | None | Path to a single model checkpoint |
+| `--checkpoints` | None | Paths to multiple checkpoints (compared side by side) |
+| `--camera` | 0 | Webcam index |
+| `--smoke_test` | off | Run with N fake models to test the UI (default: 7) |
+
+If no checkpoint is provided, or a checkpoint path doesn't exist, the demo still runs with skeleton overlay and the recording state machine -- a message is shown on screen. Architecture flags (`use_triplet`, `use_rope`) are auto-detected from folder names when using `--checkpoints`.
+
+**How it works:**
+
+The demo uses a state machine for frame accumulation:
+
+- **IDLE** -- no hands visible, waiting. Shows "Show your hands to start".
+- **RECORDING** -- hands detected, accumulating frames. Shows frame count + pulsing red dot + progress bar. Tolerates up to 5 consecutive frames without hands (MediaPipe detection dropout). Stops at 60 frames or when hands disappear for >5 frames.
+- **SHOWING** -- all model predictions displayed for 3 seconds with confidence and inference time (e.g. `book 89% (3ms)`), then resets. If hands are still visible, immediately starts recording again.
+
+Sequences shorter than 30 frames (~1 second) are discarded as too short to classify. Close with `Q`, the window X button, or `C` to clear the buffer.
+
+## Project Structure
+
+```
+supcon-for-asl-reperesentation/
+├── train.py                    # Training loop (train + val only, no test data)
+├── eval.py                     # Single-model evaluation on test set
+├── demo.py                     # Real-time webcam demo
+├── run.py                      # Orchestrate all training experiments
+├── run_eval.py                 # Orchestrate all evaluations + comparison reports
+├── requirements.txt
+├── README.md
+├── models/
+│   ├── encoder.py              # SignLanguageEncoder (flat/triplet, abs pos/RoPE)
+│   ├── losses.py               # SupConLoss, TotalLoss
+│   └── pretrain.py             # BERT-style masked pose pre-training
+├── utils/
+│   ├── augmentation_utils.py   # 7 augmentations (flip, speed, noise, scale, crop, dropout, rotate)
+│   ├── data_utils.py           # Temporal resampling utilities
+│   └── keypoint_utils.py       # MediaPipe extraction, normalization, visualization
+├── tools/
+│   ├── wlasl100_to_keypoints.py
+│   ├── sample_video_to_keypoints.py
+│   └── visualize_augmentations.py
+├── data/                       # Dataset files (not committed)
+└── experiments/                # Experiment outputs (not committed)
+    ├── trained_models/         # One folder per experiment
+    ├── eval_summary.csv        # Cross-model comparison
+    ├── eval_report.md          # Human-readable report
+    └── class_distribution.csv  # Per-class sample counts
 ```
