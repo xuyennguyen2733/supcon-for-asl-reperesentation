@@ -110,18 +110,25 @@ class RoPETransformerEncoderLayer(nn.Module):
 class SignLanguageEncoder(nn.Module):
     def __init__(self, num_classes, body_dim=69, left_hand_dim=63, right_hand_dim=63,
                  emb_dim=64, nhead=8, num_layers=4, proj_dim=128, max_T=512,
-                 dropout=0.1, use_rope=False):
+                 dropout=0.1, use_rope=False, use_triplet=True):
         super().__init__()
         self.use_rope = use_rope
+        self.use_triplet = use_triplet
 
-        # Per-body-part projections (equal capacity)
-        self.body_proj = nn.Linear(body_dim, emb_dim)
-        self.left_proj = nn.Linear(left_hand_dim, emb_dim)
-        self.right_proj = nn.Linear(right_hand_dim, emb_dim)
-
-        # Token dim after concatenation: 64 * 3 = 192
-        d_model = emb_dim * 3
+        # d_model must be the same regardless of tokenization so the
+        # transformer, heads, and checkpoints are comparable.
+        d_model = emb_dim * 3  # 192
         self.d_model = d_model
+
+        if use_triplet:
+            # Pose-Triplet: independent projections per body part
+            self.body_proj = nn.Linear(body_dim, emb_dim)
+            self.left_proj = nn.Linear(left_hand_dim, emb_dim)
+            self.right_proj = nn.Linear(right_hand_dim, emb_dim)
+        else:
+            # Flat baseline: single projection from concatenated keypoints
+            flat_dim = body_dim + left_hand_dim + right_hand_dim  # 195
+            self.flat_proj = nn.Linear(flat_dim, d_model)
 
         # Learnable [CLS] token (BERT-style init, std=0.02)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
@@ -158,6 +165,27 @@ class SignLanguageEncoder(nn.Module):
         # Linear classification head for CE loss
         self.classification_head = nn.Linear(d_model, num_classes)
 
+    def _project_tokens(self, tokens):
+        """Project raw tokens to d_model-dim frame tokens.
+
+        Returns: (B, T, d_model)
+        """
+        if self.use_triplet:
+            body = tokens[:, :, 0, :self.body_proj.in_features]    # (B, T, 69)
+            left = tokens[:, :, 1, :self.left_proj.in_features]    # (B, T, 63)
+            right = tokens[:, :, 2, :self.right_proj.in_features]  # (B, T, 63)
+            body_emb = self.body_proj(body)
+            left_emb = self.left_proj(left)
+            right_emb = self.right_proj(right)
+            return torch.cat([body_emb, left_emb, right_emb], dim=-1)
+        else:
+            # Flat: concat body(69) + left(63) + right(63) = 195
+            body = tokens[:, :, 0, :69]
+            left = tokens[:, :, 1, :63]
+            right = tokens[:, :, 2, :63]
+            flat = torch.cat([body, left, right], dim=-1)  # (B, T, 195)
+            return self.flat_proj(flat)
+
     def encode(self, tokens, mask=None):
         """Shared encoder forward pass — returns full sequence output (B, T+1, d_model).
 
@@ -165,15 +193,7 @@ class SignLanguageEncoder(nn.Module):
         """
         B, T, _, _ = tokens.shape
 
-        body = tokens[:, :, 0, :self.body_proj.in_features]    # (B, T, 69)
-        left = tokens[:, :, 1, :self.left_proj.in_features]    # (B, T, 63)
-        right = tokens[:, :, 2, :self.right_proj.in_features]  # (B, T, 63)
-
-        # Project each body part independently, then concatenate into one token
-        body_emb = self.body_proj(body)
-        left_emb = self.left_proj(left)
-        right_emb = self.right_proj(right)
-        frame_tokens = torch.cat([body_emb, left_emb, right_emb], dim=-1)  # (B, T, d_model)
+        frame_tokens = self._project_tokens(tokens)  # (B, T, d_model)
 
         # Prepend [CLS] token
         cls = self.cls_token.expand(B, -1, -1)

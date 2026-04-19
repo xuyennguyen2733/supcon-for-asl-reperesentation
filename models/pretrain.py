@@ -56,17 +56,9 @@ class MaskedPoseModeling(nn.Module):
         B, T, _, _ = tokens.shape
         device = tokens.device
 
-        # Build the target: run body-part projections to get ground truth frame tokens
-        body = tokens[:, :, 0, :self.encoder.body_proj.in_features]
-        left = tokens[:, :, 1, :self.encoder.left_proj.in_features]
-        right = tokens[:, :, 2, :self.encoder.right_proj.in_features]
-
+        # Build the target: project tokens to get ground truth frame embeddings
         with torch.no_grad():
-            target = torch.cat([
-                self.encoder.body_proj(body),
-                self.encoder.left_proj(left),
-                self.encoder.right_proj(right),
-            ], dim=-1)  # (B, T, d_model)
+            target = self.encoder._project_tokens(tokens)  # (B, T, d_model)
 
         # Create mask for which frame positions to mask (exclude padded positions)
         # rand_mask: True = will be masked for reconstruction
@@ -75,13 +67,7 @@ class MaskedPoseModeling(nn.Module):
             rand_mask = rand_mask & ~mask  # Don't mask padded positions
 
         # Replace masked frame tokens with [MASK] before encoding
-        # We need to intervene between the body-part projection and the transformer.
-        # Strategy: run encode() but swap masked positions with mask_token.
-        frame_tokens = torch.cat([
-            self.encoder.body_proj(body),
-            self.encoder.left_proj(left),
-            self.encoder.right_proj(right),
-        ], dim=-1)  # (B, T, d_model)
+        frame_tokens = self.encoder._project_tokens(tokens)  # (B, T, d_model)
 
         # Replace masked positions
         mask_expand = rand_mask.unsqueeze(-1).expand_as(frame_tokens)
@@ -130,7 +116,7 @@ def pretrain(args):
     # Build encoder + pre-training wrapper
     from models.encoder import SignLanguageEncoder
     encoder = SignLanguageEncoder(
-        num_classes=num_classes, use_rope=args.use_rope
+        num_classes=num_classes, use_rope=args.use_rope, use_triplet=args.use_triplet
     ).to(device)
     model = MaskedPoseModeling(encoder, mask_ratio=args.mask_ratio).to(device)
 
@@ -188,6 +174,7 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--mask_ratio', type=float, default=0.15)
     parser.add_argument('--use_rope', action='store_true')
+    parser.add_argument('--use_triplet', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--save_dir', type=str, default='checkpoints')
     args = parser.parse_args()

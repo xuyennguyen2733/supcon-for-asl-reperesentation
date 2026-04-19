@@ -1,7 +1,9 @@
 import os
 import argparse
+import math
 import numpy as np
 import torch
+from collections import Counter
 from torch.utils.data import Dataset, DataLoader
 
 from utils.augmentation_utils import random_augment
@@ -14,18 +16,50 @@ val_dir = os.path.join('data', 'keypoints', 'val')
 
 
 class ASLKeypointDataset(Dataset):
-    def __init__(self, keypoints_dir, augment=True):
+    def __init__(self, keypoints_dir, augment=True, target_per_class=50):
+        """
+        Args:
+            keypoints_dir: path to data/keypoints/{split}
+            augment: if True, returns two augmented views per sample
+            target_per_class: desired effective samples per class per epoch.
+                When augment=True, each base sample is repeated enough times
+                so every class reaches this target. A label with 4 raw samples
+                gets repeated ~13x, a label with 12 gets repeated ~5x.
+                All augmentations are random and on-the-fly — nothing is saved.
+                Set to 0 to disable oversampling (use raw counts).
+        """
         self.augment = augment
         self.labels = sorted(os.listdir(keypoints_dir))
         self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
-        self.samples = []
 
+        # Collect base samples per label
+        base_samples = []
         for label in self.labels:
             label_dir = os.path.join(keypoints_dir, label)
             for sample_id in sorted(os.listdir(label_dir)):
                 sample_dir = os.path.join(label_dir, sample_id)
                 if os.path.isdir(sample_dir):
-                    self.samples.append((sample_dir, self.label_to_idx[label]))
+                    base_samples.append((sample_dir, self.label_to_idx[label]))
+
+        # Build oversampled index: repeat under-represented labels
+        if augment and target_per_class > 0:
+            label_counts = Counter(label_idx for _, label_idx in base_samples)
+            # Group samples by label
+            label_to_samples = {}
+            for sample_dir, label_idx in base_samples:
+                label_to_samples.setdefault(label_idx, []).append((sample_dir, label_idx))
+
+            self.samples = []
+            for label_idx, samples in label_to_samples.items():
+                n = len(samples)
+                repeats = math.ceil(target_per_class / n)
+                self.samples.extend(samples * repeats)
+
+            raw_total = len(base_samples)
+            print(f"  Oversampling: {raw_total} raw -> {len(self.samples)} effective "
+                  f"(target {target_per_class}/class, {len(label_counts)} classes)")
+        else:
+            self.samples = base_samples
 
     def __len__(self):
         return len(self.samples)
@@ -90,7 +124,8 @@ def collate_eval(batch):
     return tokens, mask, torch.stack(labels)
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
+def train_one_epoch_supcon(model, dataloader, criterion, optimizer, device):
+    """Training step with SupCon + CE (two augmented views)."""
     model.train()
     total_loss_sum = 0.0
     supcon_loss_sum = 0.0
@@ -117,7 +152,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         supcon_loss_sum += supcon_loss.item() * labels.size(0)
         ce_loss_sum += ce_loss.item() * labels.size(0)
 
-        # Accuracy from average logits of both views
         avg_logits = (logits1 + logits2) / 2
         correct += (avg_logits.argmax(dim=1) == labels).sum().item()
         total += labels.size(0)
@@ -126,6 +160,38 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     return {
         'loss': total_loss_sum / n,
         'supcon_loss': supcon_loss_sum / n,
+        'ce_loss': ce_loss_sum / n,
+        'acc': correct / n,
+    }
+
+
+def train_one_epoch_ce(model, dataloader, criterion, optimizer, device):
+    """Training step with CE only (single augmented view, no contrastive loss)."""
+    model.train()
+    ce_loss_sum = 0.0
+    correct = 0
+    total = 0
+
+    for tokens, mask, labels in dataloader:
+        tokens, mask = tokens.to(device), mask.to(device)
+        labels = labels.to(device)
+
+        _, logits = model(tokens, mask)
+        loss = criterion(logits, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        ce_loss_sum += loss.item() * labels.size(0)
+        correct += (logits.argmax(dim=1) == labels).sum().item()
+        total += labels.size(0)
+
+    n = total
+    return {
+        'loss': ce_loss_sum / n,
+        'supcon_loss': 0.0,
         'ce_loss': ce_loss_sum / n,
         'acc': correct / n,
     }
@@ -156,26 +222,48 @@ def evaluate(model, dataloader, device):
 
 
 def main(args):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    # Reproducibility
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
 
-    # Datasets
-    train_dataset = ASLKeypointDataset(train_dir, augment=True)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    use_supcon = not args.ce_only
+
+    print(f"Using device: {device}")
+    print(f"Tokenization: {'Pose-Triplet' if args.use_triplet else 'Flat'}")
+    print(f"Loss: {'SupCon + CE' if use_supcon else 'CE only'}")
+    if args.use_rope:
+        print(f"Positional encoding: RoPE")
+    if args.pretrained_path:
+        print(f"Pre-trained: {args.pretrained_path}")
+
+    # Datasets — CE-only uses single augmented view, SupCon uses two views
+    train_dataset = ASLKeypointDataset(train_dir, augment=True, target_per_class=args.target_per_class)
     val_dataset = ASLKeypointDataset(val_dir, augment=False)
     test_dataset = ASLKeypointDataset(test_dir, augment=False)
 
     num_classes = len(train_dataset.labels)
     print(f"Classes: {num_classes}, Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
+    if use_supcon:
+        train_collate = collate_augmented
+    else:
+        # CE-only: dataset still returns (view1, view2, label) but we only use view1
+        train_collate = lambda batch: collate_eval([(v1, l) for v1, _, l in batch])
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=collate_augmented, num_workers=args.num_workers)
+                              collate_fn=train_collate, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
                             collate_fn=collate_eval, num_workers=args.num_workers)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
                              collate_fn=collate_eval, num_workers=args.num_workers)
 
     # Model
-    model = SignLanguageEncoder(num_classes=num_classes, use_rope=args.use_rope).to(device)
+    model = SignLanguageEncoder(num_classes=num_classes, use_rope=args.use_rope,
+                                use_triplet=args.use_triplet).to(device)
 
     # Load pre-trained encoder weights if provided
     if args.pretrained_path:
@@ -184,7 +272,13 @@ def main(args):
         print(f"Loaded pre-trained encoder from {args.pretrained_path} "
               f"(epoch {checkpoint['epoch']}, loss {checkpoint['loss']:.6f})")
 
-    criterion = TotalLoss(temperature=args.temperature, ce_weight=args.ce_weight)
+    if use_supcon:
+        criterion = TotalLoss(temperature=args.temperature, ce_weight=args.ce_weight)
+        train_fn = train_one_epoch_supcon
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
+        train_fn = train_one_epoch_ce
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # Linear warmup then cosine decay
@@ -201,7 +295,7 @@ def main(args):
     best_val_top1 = 0.0
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_metrics = train_fn(model, train_loader, criterion, optimizer, device)
         val_metrics = evaluate(model, val_loader, device)
         scheduler.step()
 
@@ -241,8 +335,14 @@ if __name__ == '__main__':
     parser.add_argument('--temperature', type=float, default=0.07)
     parser.add_argument('--ce_weight', type=float, default=0.1)
     parser.add_argument('--warmup_epochs', type=int, default=10)
+    parser.add_argument('--target_per_class', type=int, default=50,
+                        help='Oversample each class to this many samples per epoch (0 to disable)')
+    parser.add_argument('--ce_only', action='store_true', help='CE-only baseline (no contrastive loss)')
+    parser.add_argument('--use_triplet', action=argparse.BooleanOptionalAction, default=True,
+                        help='Use Pose-Triplet tokenization (default: True, --no-use_triplet for flat)')
     parser.add_argument('--use_rope', action='store_true', help='Use RoPE instead of absolute positional encoding')
     parser.add_argument('--pretrained_path', type=str, default=None, help='Path to pre-trained encoder checkpoint')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--save_dir', type=str, default='checkpoints')
     args = parser.parse_args()
