@@ -5,20 +5,27 @@ With 1 GPU, experiments run sequentially in priority order.
 With N GPUs, up to N experiments run concurrently.
 
 Usage:
-    python run.py                   # run all experiments
-    python run.py --epochs 50       # override epoch count
-    python run.py --dry_run         # print commands without running
-    python run.py --only 1 4 5      # run specific experiments by number
+    python run.py                            # run all experiments
+    python run.py --epochs 50                # override epoch count
+    python run.py --dry_run                  # print commands without running
+    python run.py --only 1 4 5               # run specific experiments by number
+    python run.py --tmux training            # run inside tmux session "training"
+                                             #   auto-stops RunPod when done
 """
 
 import os
 import sys
 import subprocess
+import shlex
 import argparse
+import signal
 import torch
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 BASE_DIR = os.path.join('experiments', 'trained_models')
+
+# Signals that indicate user-initiated kill (Ctrl+C, terminal kill, etc.)
+USER_KILL_SIGNALS = {signal.SIGINT, signal.SIGTERM}
 
 
 def get_experiments(epochs, pretrain_epochs):
@@ -170,6 +177,193 @@ def run_experiment(experiment, gpu_id=None):
     return name, True, f"Done. Log: {log_path}"
 
 
+def run_experiments(experiments, gpu_ids):
+    """Run all experiments, returns True if all succeeded."""
+    all_success = True
+    os.makedirs(BASE_DIR, exist_ok=True)
+
+    if len(gpu_ids) <= 1:
+        gpu = gpu_ids[0]
+        for i, exp in enumerate(experiments, 1):
+            gpu_label = f"GPU {gpu}" if gpu is not None else "CPU"
+            print(f"[{i}/{len(experiments)}] Starting: {exp['name']} ({gpu_label})")
+            name, success, msg = run_experiment(exp, gpu)
+            status = "PASS" if success else "FAIL"
+            if not success:
+                all_success = False
+            print(f"[{i}/{len(experiments)}] {status}: {name} — {msg}\n")
+    else:
+        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
+            futures = {}
+            for i, exp in enumerate(experiments):
+                gpu = gpu_ids[i % len(gpu_ids)]
+                future = executor.submit(run_experiment, exp, gpu)
+                futures[future] = (i + 1, exp['name'], gpu)
+
+            for future in as_completed(futures):
+                idx, exp_name, gpu = futures[future]
+                name, success, msg = future.result()
+                status = "PASS" if success else "FAIL"
+                if not success:
+                    all_success = False
+                print(f"[{idx}/{len(experiments)}] {status} (GPU {gpu}): {name} — {msg}")
+
+    return all_success
+
+
+def stop_runpod():
+    """Stop the current RunPod instance via runpodctl."""
+    try:
+        subprocess.run(['runpodctl', 'stop', 'pod'], check=True, timeout=30)
+        print("RunPod pod stopped.")
+    except FileNotFoundError:
+        print("runpodctl not found — cannot auto-stop pod.")
+        print("Stop manually at https://www.runpod.io/console/pods")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to stop pod: {e}")
+    except subprocess.TimeoutExpired:
+        print("Timed out trying to stop pod.")
+
+
+def prompt_stop_pod(timeout_seconds=120):
+    """Ask the user whether to stop the RunPod pod.
+
+    Returns True if the pod should be stopped:
+      - User types y/yes/Enter -> stop
+      - No response within timeout_seconds -> stop
+      - User types n/no -> don't stop
+    """
+    import select
+
+    print(f"\nAll experiments finished.")
+    print(f"Stop RunPod pod to avoid charges? [Y/n] (auto-stops in {timeout_seconds}s) ", end='', flush=True)
+
+    try:
+        # Use select for timeout on Unix; fall back to alarm-based approach
+        if hasattr(select, 'select'):
+            ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+            if ready:
+                answer = sys.stdin.readline().strip().lower()
+            else:
+                print("\nNo response — stopping pod.")
+                return True
+        else:
+            # Windows fallback: use signal.alarm if available, otherwise no timeout
+            answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        # Non-interactive terminal or Ctrl+C during prompt
+        print("\nNo input available — stopping pod.")
+        return True
+
+    if answer in ('n', 'no'):
+        print("Pod will keep running.")
+        return False
+
+    # y, yes, empty string, or anything else -> stop
+    return True
+
+
+def launch_in_tmux(session_name, argv):
+    """Re-launch this script inside a tmux session.
+
+    The inner invocation runs without --tmux so it executes normally.
+    """
+    # Build the inner command: same args but without --tmux <session>
+    inner_args = []
+    skip_next = False
+    for i, arg in enumerate(argv[1:]):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '--tmux':
+            skip_next = True  # skip the session name that follows
+            continue
+        inner_args.append(arg)
+
+    inner_cmd = f'{shlex.quote(sys.executable)} {shlex.quote(argv[0])} {" ".join(shlex.quote(a) for a in inner_args)}'
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Wrap in a shell script that:
+    # 1. Runs the experiments
+    # 2. On natural exit (finish/crash): prompts to stop pod
+    # 3. On user kill (Ctrl+C / SIGINT): just exits, does NOT stop pod
+    wrapper_script = f"""#!/bin/bash
+cd {shlex.quote(project_dir)}
+
+# Track whether exit was user-initiated
+USER_KILLED=0
+trap 'USER_KILLED=1; exit 130' INT TERM
+
+{inner_cmd}
+EXIT_CODE=$?
+
+if [ $USER_KILLED -eq 1 ]; then
+    echo ""
+    echo "User interrupted — pod will keep running."
+    exit $EXIT_CODE
+fi
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo ""
+    echo "All experiments completed successfully."
+else
+    echo ""
+    echo "Experiments finished with errors (exit code $EXIT_CODE)."
+fi
+
+# Prompt to stop pod (auto-stop after 2 minutes of no input)
+echo ""
+echo -n "Stop RunPod pod to avoid charges? [Y/n] (auto-stops in 120s) "
+read -t 120 ANSWER
+READ_EXIT=$?
+
+if [ $READ_EXIT -ne 0 ]; then
+    echo ""
+    echo "No response — stopping pod."
+    runpodctl stop pod 2>/dev/null || echo "runpodctl not found. Stop manually."
+    exit $EXIT_CODE
+fi
+
+ANSWER=$(echo "$ANSWER" | tr '[:upper:]' '[:lower:]')
+if [ "$ANSWER" = "n" ] || [ "$ANSWER" = "no" ]; then
+    echo "Pod will keep running."
+else
+    echo "Stopping pod..."
+    runpodctl stop pod 2>/dev/null || echo "runpodctl not found. Stop manually."
+fi
+
+exit $EXIT_CODE
+"""
+
+    wrapper_path = os.path.join(project_dir, '.tmux_run_wrapper.sh')
+    with open(wrapper_path, 'w', newline='\n') as f:
+        f.write(wrapper_script)
+    os.chmod(wrapper_path, 0o755)
+
+    # Create or attach to tmux session
+    # Check if session already exists
+    check = subprocess.run(['tmux', 'has-session', '-t', session_name],
+                           capture_output=True)
+    if check.returncode == 0:
+        print(f"tmux session '{session_name}' already exists.")
+        print(f"Attach with: tmux attach -t {session_name}")
+        print(f"Or kill it first: tmux kill-session -t {session_name}")
+        sys.exit(1)
+
+    print(f"Launching experiments in tmux session: {session_name}")
+    print(f"Detach with: Ctrl+B then D")
+    print(f"Re-attach with: tmux attach -t {session_name}")
+    print()
+
+    # Start tmux session running the wrapper
+    subprocess.run([
+        'tmux', 'new-session', '-d', '-s', session_name, f'bash {shlex.quote(wrapper_path)}'
+    ], check=True)
+
+    # Attach to it
+    os.execvp('tmux', ['tmux', 'attach', '-t', session_name])
+
+
 def main():
     parser = argparse.ArgumentParser(description='Run all ASL SupCon experiments')
     parser.add_argument('--epochs', type=int, default=100, help='Training epochs per experiment')
@@ -177,7 +371,14 @@ def main():
     parser.add_argument('--dry_run', action='store_true', help='Print commands without running')
     parser.add_argument('--only', type=int, nargs='+', default=None,
                         help='Run only specific experiments by number (e.g. --only 1 4 5)')
+    parser.add_argument('--tmux', type=str, default=None, metavar='SESSION',
+                        help='Run inside a tmux session (survives disconnects, auto-stops RunPod when done)')
     args = parser.parse_args()
+
+    # If --tmux is set, re-launch inside tmux and exit
+    if args.tmux:
+        launch_in_tmux(args.tmux, sys.argv)
+        return  # unreachable after execvp, but for clarity
 
     experiments = get_experiments(args.epochs, args.pretrain_epochs)
 
@@ -217,41 +418,27 @@ def main():
             print(f"  train:    {' '.join(exp['train_cmd'])}")
         return
 
+    # Track if we were killed by user
+    user_killed = False
+    def handle_signal(signum, frame):
+        nonlocal user_killed
+        user_killed = True
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
     # Run experiments
     print(f"\n{'='*70}")
     print("RUNNING EXPERIMENTS")
     print(f"{'='*70}\n")
 
-    os.makedirs(BASE_DIR, exist_ok=True)
-
-    if len(gpu_ids) <= 1:
-        # Single GPU / CPU: run sequentially in priority order
-        gpu = gpu_ids[0]
-        for i, exp in enumerate(experiments, 1):
-            gpu_label = f"GPU {gpu}" if gpu is not None else "CPU"
-            print(f"[{i}/{len(experiments)}] Starting: {exp['name']} ({gpu_label})")
-            name, success, msg = run_experiment(exp, gpu)
-            status = "PASS" if success else "FAIL"
-            print(f"[{i}/{len(experiments)}] {status}: {name} — {msg}\n")
-    else:
-        # Multi-GPU: run experiments in parallel, one per GPU.
-        # Experiments with pretrain dependencies are self-contained
-        # (pretrain runs inside run_experiment before train), so they
-        # can safely be parallelized.
-        results = {}
-        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
-            futures = {}
-            for i, exp in enumerate(experiments):
-                gpu = gpu_ids[i % len(gpu_ids)]
-                future = executor.submit(run_experiment, exp, gpu)
-                futures[future] = (i + 1, exp['name'], gpu)
-
-            for future in as_completed(futures):
-                idx, exp_name, gpu = futures[future]
-                name, success, msg = future.result()
-                status = "PASS" if success else "FAIL"
-                print(f"[{idx}/{len(experiments)}] {status} (GPU {gpu}): {name} — {msg}")
-                results[exp_name] = success
+    try:
+        all_success = run_experiments(experiments, gpu_ids)
+    except KeyboardInterrupt:
+        user_killed = True
+        print("\n\nUser interrupted — stopping experiments.")
+        all_success = False
 
     # Summary
     print(f"\n{'='*70}")
@@ -263,6 +450,12 @@ def main():
     print(f"  train.log      — full training output")
     if any(e['pretrain_cmd'] for e in experiments):
         print(f"  pretrained_encoder.pt — pre-trained weights (experiments 6, 7)")
+
+    # Exit code for the wrapper script to use
+    if user_killed:
+        sys.exit(130)  # convention for SIGINT
+    elif not all_success:
+        sys.exit(1)
 
 
 if __name__ == '__main__':
