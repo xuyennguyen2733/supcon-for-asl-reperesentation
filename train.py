@@ -306,6 +306,7 @@ def main(args):
 
     best_val_top1 = 0.0
     start_epoch = 1
+    epochs_without_improvement = 0
 
     # Resume from checkpoint if --resume and one exists
     resume_path = os.path.join(args.save_dir, 'last_checkpoint.pt')
@@ -316,6 +317,7 @@ def main(args):
         scheduler.load_state_dict(resume['scheduler_state_dict'])
         start_epoch = resume['epoch'] + 1
         best_val_top1 = resume['best_val_top1']
+        epochs_without_improvement = resume.get('epochs_without_improvement', 0)
         print(f"Resumed from epoch {resume['epoch']} (best val top1: {best_val_top1:.4f})")
 
     for epoch in range(start_epoch, args.epochs + 1):
@@ -334,6 +336,7 @@ def main(args):
         # Save best model
         if val_metrics['top1'] > best_val_top1:
             best_val_top1 = val_metrics['top1']
+            epochs_without_improvement = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -341,6 +344,8 @@ def main(args):
                 'val_top1': best_val_top1,
             }, os.path.join(args.save_dir, 'best_model.pt'))
             print(f"  -> Saved new best model (val top1: {best_val_top1:.4f})")
+        else:
+            epochs_without_improvement += 1
 
         # Save resumable checkpoint every epoch (overwrites previous)
         torch.save({
@@ -349,7 +354,13 @@ def main(args):
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'best_val_top1': best_val_top1,
+            'epochs_without_improvement': epochs_without_improvement,
         }, resume_path)
+
+        # Early stopping
+        if args.patience > 0 and epochs_without_improvement >= args.patience:
+            print(f"\nEarly stopping: no improvement for {args.patience} epochs.")
+            break
 
     print(f"\nTraining complete. Best val top1: {best_val_top1:.4f}")
     print(f"Run eval.py to evaluate on the test set.")
@@ -372,6 +383,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_rope', action='store_true', help='Use RoPE instead of absolute positional encoding')
     parser.add_argument('--pretrained_path', type=str, default=None, help='Path to pre-trained encoder checkpoint')
     parser.add_argument('--resume', action='store_true', help='Resume training from last_checkpoint.pt in save_dir')
+    parser.add_argument('--patience', type=int, default=20,
+                        help='Early stopping patience: stop after N epochs without val improvement (0 to disable)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--save_dir', type=str, default='checkpoints')
