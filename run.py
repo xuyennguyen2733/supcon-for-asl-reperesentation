@@ -44,7 +44,7 @@ def get_experiments(epochs, pretrain_epochs):
             'description': 'Baseline: flat tokens + CE only',
             'pretrain_cmd': None,
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--no-use_triplet', '--ce_only',
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '1_flat_ce'),
@@ -55,7 +55,7 @@ def get_experiments(epochs, pretrain_epochs):
             'description': 'Flat tokens + SupCon + CE (isolates SupCon)',
             'pretrain_cmd': None,
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--no-use_triplet',
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '2_flat_supcon_ce'),
@@ -66,7 +66,7 @@ def get_experiments(epochs, pretrain_epochs):
             'description': 'Pose-Triplet + CE only (isolates triplet)',
             'pretrain_cmd': None,
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--ce_only',
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '3_triplet_ce'),
@@ -77,7 +77,7 @@ def get_experiments(epochs, pretrain_epochs):
             'description': 'Pose-Triplet + SupCon + CE (proposed method)',
             'pretrain_cmd': None,
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '4_triplet_supcon_ce'),
             ],
@@ -88,7 +88,7 @@ def get_experiments(epochs, pretrain_epochs):
             'description': 'Proposed + RoPE positional encoding',
             'pretrain_cmd': None,
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--use_rope',
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '5_triplet_rope_supcon_ce'),
@@ -98,12 +98,12 @@ def get_experiments(epochs, pretrain_epochs):
             'name': '6_triplet_pt_supcon_ce',
             'description': 'Proposed + masked pose pre-training',
             'pretrain_cmd': [
-                sys.executable, '-m', 'models.pretrain',
+                sys.executable, '-u', '-m', 'models.pretrain',
                 '--epochs', str(pretrain_epochs),
                 '--save_dir', os.path.join(BASE_DIR, '6_triplet_pt_supcon_ce'),
             ],
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--pretrained_path', os.path.join(BASE_DIR, '6_triplet_pt_supcon_ce', 'pretrained_encoder.pt'),
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '6_triplet_pt_supcon_ce'),
@@ -113,13 +113,13 @@ def get_experiments(epochs, pretrain_epochs):
             'name': '7_triplet_rope_pt_supcon_ce',
             'description': 'Proposed + RoPE + pre-training (full pipeline)',
             'pretrain_cmd': [
-                sys.executable, '-m', 'models.pretrain',
+                sys.executable, '-u', '-m', 'models.pretrain',
                 '--use_rope',
                 '--epochs', str(pretrain_epochs),
                 '--save_dir', os.path.join(BASE_DIR, '7_triplet_rope_pt_supcon_ce'),
             ],
             'train_cmd': [
-                sys.executable, 'train.py',
+                sys.executable, '-u', 'train.py', '--resume',
                 '--use_rope',
                 '--pretrained_path', os.path.join(BASE_DIR, '7_triplet_rope_pt_supcon_ce', 'pretrained_encoder.pt'),
                 '--epochs', str(epochs),

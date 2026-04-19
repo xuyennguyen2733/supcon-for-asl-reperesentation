@@ -305,8 +305,20 @@ def main(args):
         json.dump(train_dataset.label_to_idx, f, indent=2)
 
     best_val_top1 = 0.0
+    start_epoch = 1
 
-    for epoch in range(1, args.epochs + 1):
+    # Resume from checkpoint if --resume and one exists
+    resume_path = os.path.join(args.save_dir, 'last_checkpoint.pt')
+    if args.resume and os.path.isfile(resume_path):
+        resume = torch.load(resume_path, weights_only=False)
+        model.load_state_dict(resume['model_state_dict'])
+        optimizer.load_state_dict(resume['optimizer_state_dict'])
+        scheduler.load_state_dict(resume['scheduler_state_dict'])
+        start_epoch = resume['epoch'] + 1
+        best_val_top1 = resume['best_val_top1']
+        print(f"Resumed from epoch {resume['epoch']} (best val top1: {best_val_top1:.4f})")
+
+    for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = train_fn(model, train_loader, criterion, optimizer, device)
         val_metrics = evaluate(model, val_loader, device)
         scheduler.step()
@@ -330,6 +342,15 @@ def main(args):
             }, os.path.join(args.save_dir, 'best_model.pt'))
             print(f"  -> Saved new best model (val top1: {best_val_top1:.4f})")
 
+        # Save resumable checkpoint every epoch (overwrites previous)
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_val_top1': best_val_top1,
+        }, resume_path)
+
     print(f"\nTraining complete. Best val top1: {best_val_top1:.4f}")
     print(f"Run eval.py to evaluate on the test set.")
 
@@ -350,6 +371,7 @@ if __name__ == '__main__':
                         help='Use Pose-Triplet tokenization (default: True, --no-use_triplet for flat)')
     parser.add_argument('--use_rope', action='store_true', help='Use RoPE instead of absolute positional encoding')
     parser.add_argument('--pretrained_path', type=str, default=None, help='Path to pre-trained encoder checkpoint')
+    parser.add_argument('--resume', action='store_true', help='Resume training from last_checkpoint.pt in save_dir')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--save_dir', type=str, default='checkpoints')
