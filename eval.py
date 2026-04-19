@@ -163,11 +163,15 @@ def generate_tsne(embeddings, labels, label_names, save_path):
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Load test dataset
+    # Build label mapping from training set so test indices match
+    train_dir = os.path.join('data', 'keypoints', 'train')
+    train_label_names = sorted(os.listdir(train_dir))
+    train_label_to_idx = {label: idx for idx, label in enumerate(train_label_names)}
+
     test_dir = os.path.join('data', 'keypoints', 'test')
-    test_dataset = ASLKeypointDataset(test_dir, augment=False)
-    num_classes = len(test_dataset.labels)
-    print(f"Test set: {len(test_dataset)} samples, {num_classes} classes")
+    test_dataset = ASLKeypointDataset(test_dir, augment=False, label_to_idx=train_label_to_idx)
+    print(f"Test set: {len(test_dataset)} samples, {len(test_dataset.labels)} test classes "
+          f"(trained on {len(train_label_names)})")
 
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
                              collate_fn=collate_eval, num_workers=0)
@@ -195,7 +199,7 @@ def main(args):
     print(f"Top-5 Accuracy: {acc['top5']:.4f}")
 
     # 2. Per-class accuracy
-    per_class = compute_per_class_accuracy(data['logits'], data['labels'], test_dataset.labels)
+    per_class = compute_per_class_accuracy(data['logits'], data['labels'], train_label_names)
     sorted_classes = sorted(per_class.items(), key=lambda x: x[1]['accuracy'])
     print(f"\nPer-class accuracy ({num_classes} classes):")
     print(f"  Worst 5:")
@@ -214,7 +218,7 @@ def main(args):
 
     # 4. t-SNE visualization
     tsne_path = os.path.join(out_dir, 'tsne.png')
-    generate_tsne(data['embeddings'], data['labels'], test_dataset.labels, tsne_path)
+    generate_tsne(data['embeddings'], data['labels'], train_label_names, tsne_path)
 
     # Save all metrics to JSON
     results = {

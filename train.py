@@ -16,7 +16,7 @@ val_dir = os.path.join('data', 'keypoints', 'val')
 
 
 class ASLKeypointDataset(Dataset):
-    def __init__(self, keypoints_dir, augment=True, target_per_class=50):
+    def __init__(self, keypoints_dir, augment=True, target_per_class=50, label_to_idx=None):
         """
         Args:
             keypoints_dir: path to data/keypoints/{split}
@@ -27,10 +27,16 @@ class ASLKeypointDataset(Dataset):
                 gets repeated ~13x, a label with 12 gets repeated ~5x.
                 All augmentations are random and on-the-fly — nothing is saved.
                 Set to 0 to disable oversampling (use raw counts).
+            label_to_idx: explicit label->index mapping. If None, built from this
+                directory. Pass the training set's mapping to val/test sets to
+                ensure consistent indices.
         """
         self.augment = augment
         self.labels = sorted(os.listdir(keypoints_dir))
-        self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
+        if label_to_idx is not None:
+            self.label_to_idx = label_to_idx
+        else:
+            self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
 
         # Collect base samples per label
         base_samples = []
@@ -241,10 +247,11 @@ def main(args):
         print(f"Pre-trained: {args.pretrained_path}")
 
     # Datasets — only train and val; test is reserved for eval.py
+    # Val must use the same label_to_idx as train for consistent class indices
     train_dataset = ASLKeypointDataset(train_dir, augment=True, target_per_class=args.target_per_class)
-    val_dataset = ASLKeypointDataset(val_dir, augment=False)
+    val_dataset = ASLKeypointDataset(val_dir, augment=False, label_to_idx=train_dataset.label_to_idx)
 
-    num_classes = len(train_dataset.labels)
+    num_classes = len(train_dataset.label_to_idx)
     print(f"Classes: {num_classes}, Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
     if use_supcon:

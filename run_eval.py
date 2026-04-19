@@ -428,15 +428,15 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nUsing device: {device}")
 
-    test_dir = os.path.join('data', 'keypoints', 'test')
-    test_dataset = ASLKeypointDataset(test_dir, augment=False)
-
-    # Label names must come from training set (model was trained on all of them)
-    # Test set may only have a subset of classes
+    # Build label mapping from training set — test set must use the same indices
     train_dir = os.path.join('data', 'keypoints', 'train')
     train_label_names = sorted(os.listdir(train_dir))
+    train_label_to_idx = {label: idx for idx, label in enumerate(train_label_names)}
 
-    print(f"Test set: {len(test_dataset)} samples, {len(test_dataset.labels)} classes "
+    test_dir = os.path.join('data', 'keypoints', 'test')
+    test_dataset = ASLKeypointDataset(test_dir, augment=False, label_to_idx=train_label_to_idx)
+
+    print(f"Test set: {len(test_dataset)} samples, {len(test_dataset.labels)} test classes "
           f"(model trained on {len(train_label_names)})")
 
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
