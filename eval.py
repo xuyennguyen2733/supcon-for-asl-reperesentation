@@ -136,23 +136,39 @@ def generate_tsne(embeddings, labels, label_names, save_path):
     fig, ax = plt.subplots(figsize=(14, 10))
 
     unique_labels = sorted(set(labels.numpy()))
-    cmap = plt.cm.get_cmap('tab20', len(unique_labels))
+    labels_np = labels.numpy()
 
-    for i, label_idx in enumerate(unique_labels):
-        mask = labels.numpy() == label_idx
+    # Count samples per class, pick top 10 for colored display
+    from collections import Counter
+    label_counts = Counter(labels_np.tolist())
+    top_classes = [idx for idx, _ in sorted(label_counts.items(), key=lambda x: -x[1])[:10]]
+
+    # 10 distinct colors that are far from dark grey
+    highlight_colors = [
+        '#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4',
+        '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#dcbeff',
+    ]
+    color_map = {idx: highlight_colors[i] for i, idx in enumerate(top_classes)}
+    grey = '#555555'
+
+    # Draw grey (other) points first so highlighted ones are on top
+    other_mask = np.array([l not in color_map for l in labels_np])
+    if other_mask.any():
+        ax.scatter(coords[other_mask, 0], coords[other_mask, 1],
+                   c=grey, s=10, alpha=0.3, label='other classes')
+
+    for label_idx in top_classes:
+        mask = labels_np == label_idx
+        name = label_names[label_idx] if label_idx < len(label_names) else str(label_idx)
+        count = label_counts[label_idx]
         ax.scatter(coords[mask, 0], coords[mask, 1],
-                   c=[cmap(i)], s=15, alpha=0.7, label=label_names[label_idx])
+                   c=color_map[label_idx], s=25, alpha=0.8,
+                   label=f'{name} ({count})')
 
     ax.set_title('t-SNE of Learned Embeddings (Test Set)')
     ax.set_xticks([])
     ax.set_yticks([])
-
-    # Legend outside plot if many classes
-    if len(unique_labels) > 20:
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left',
-                  fontsize=5, ncol=2, markerscale=2)
-    else:
-        ax.legend(fontsize=6, ncol=2, markerscale=2)
+    ax.legend(fontsize=8, markerscale=2, loc='best')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=200, bbox_inches='tight')
