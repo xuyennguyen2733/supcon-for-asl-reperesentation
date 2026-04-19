@@ -127,7 +127,7 @@ def save_predictions_csv(logits, labels, label_names, save_path):
             ])
 
 
-def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
+def evaluate_model(checkpoint_path, test_loader, device, train_label_names):
     """Evaluate a single model. Saves outputs to EVAL_DIR/{model_name}/."""
     model_src_dir = os.path.dirname(checkpoint_path)
     config = infer_config(model_src_dir)
@@ -157,12 +157,12 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
 
     # Metrics
     acc = compute_accuracy(data['logits'], data['labels'])
-    per_class = compute_per_class_accuracy(data['logits'], data['labels'], test_dataset.labels)
+    per_class = compute_per_class_accuracy(data['logits'], data['labels'], train_label_names)
     dist = compute_distance_ratio(data['embeddings'], data['labels'])
 
     # Save per-model outputs to experiments/evaluation/{model_name}/
     predictions_path = os.path.join(out_dir, 'predictions.csv')
-    save_predictions_csv(data['logits'], data['labels'], test_dataset.labels, predictions_path)
+    save_predictions_csv(data['logits'], data['labels'], train_label_names, predictions_path)
 
     results = {
         'experiment': tag,
@@ -183,7 +183,7 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
         json.dump(results, f, indent=2)
 
     tsne_path = os.path.join(out_dir, 'tsne.png')
-    generate_tsne(data['embeddings'], data['labels'], test_dataset.labels, tsne_path)
+    generate_tsne(data['embeddings'], data['labels'], train_label_names, tsne_path)
 
     print(f"  [{tag}] Done.")
     return results
@@ -430,8 +430,14 @@ def main():
 
     test_dir = os.path.join('data', 'keypoints', 'test')
     test_dataset = ASLKeypointDataset(test_dir, augment=False)
-    num_classes = len(test_dataset.labels)
-    print(f"Test set: {len(test_dataset)} samples, {num_classes} classes")
+
+    # Label names must come from training set (model was trained on all of them)
+    # Test set may only have a subset of classes
+    train_dir = os.path.join('data', 'keypoints', 'train')
+    train_label_names = sorted(os.listdir(train_dir))
+
+    print(f"Test set: {len(test_dataset)} samples, {len(test_dataset.labels)} classes "
+          f"(model trained on {len(train_label_names)})")
 
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
                              collate_fn=collate_eval, num_workers=0)
@@ -450,7 +456,7 @@ def main():
     crashed = False
     try:
         for cp in checkpoints:
-            results = evaluate_model(cp, test_dataset, test_loader, device)
+            results = evaluate_model(cp, test_loader, device, train_label_names)
             all_results.append(results)
     except KeyboardInterrupt:
         user_killed = True
