@@ -252,13 +252,15 @@ def load_models(checkpoint_paths, device):
         config = infer_config(cp)
         name = short_name(cp)
 
+        checkpoint = torch.load(cp, weights_only=False)
+        trained_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]
+
         model = SignLanguageEncoder(
-            num_classes=num_classes,
+            num_classes=trained_classes,
             use_triplet=config['use_triplet'],
             use_rope=config['use_rope'],
         ).to(device)
 
-        checkpoint = torch.load(cp, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 

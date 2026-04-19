@@ -422,6 +422,9 @@ def main():
         user_killed = True
         print("\n\nUser interrupted — stopping experiments.")
         all_success = False
+    except Exception as e:
+        all_success = False
+        print(f"\n\nTraining crashed: {e}")
 
     # Summary
     print(f"\n{'='*70}")

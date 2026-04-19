@@ -172,15 +172,16 @@ def main(args):
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
                              collate_fn=collate_eval, num_workers=0)
 
-    # Build model with matching architecture
-    model = SignLanguageEncoder(num_classes=num_classes, use_rope=args.use_rope,
-                                use_triplet=args.use_triplet).to(device)
-
-    # Load checkpoint
+    # Load checkpoint first to get num_classes from saved weights
     checkpoint = torch.load(args.checkpoint, weights_only=False)
+    trained_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]
+
+    model = SignLanguageEncoder(num_classes=trained_classes, use_rope=args.use_rope,
+                                use_triplet=args.use_triplet).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     print(f"Loaded checkpoint: {args.checkpoint} "
-          f"(epoch {checkpoint['epoch']}, val top1 {checkpoint['val_top1']:.4f})")
+          f"(epoch {checkpoint['epoch']}, val top1 {checkpoint['val_top1']:.4f}, "
+          f"trained on {trained_classes} classes, testing on {num_classes})")
 
     # Collect all predictions and embeddings
     data = collect_predictions_and_embeddings(model, test_loader, device)

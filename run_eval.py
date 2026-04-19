@@ -132,7 +132,6 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
     model_src_dir = os.path.dirname(checkpoint_path)
     config = infer_config(model_src_dir)
     description = get_description(model_src_dir)
-    num_classes = len(test_dataset.labels)
 
     tag = os.path.basename(model_src_dir)
     out_dir = os.path.join(EVAL_DIR, tag)
@@ -140,14 +139,17 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
 
     print(f"  [{tag}] Evaluating {description}...")
 
-    # Build model
+    # Load checkpoint first to get num_classes from the saved weights
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    num_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]
+
+    # Build model with the same num_classes it was trained with
     model = SignLanguageEncoder(
         num_classes=num_classes,
         use_triplet=config['use_triplet'],
         use_rope=config['use_rope'],
     ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
 
     # Collect predictions and embeddings
@@ -445,6 +447,7 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
 
     all_results = []
+    crashed = False
     try:
         for cp in checkpoints:
             results = evaluate_model(cp, test_dataset, test_loader, device)
@@ -452,11 +455,17 @@ def main():
     except KeyboardInterrupt:
         user_killed = True
         print("\n\nUser interrupted — saving partial results.")
+    except Exception as e:
+        crashed = True
+        print(f"\n\nEvaluation crashed: {e}")
 
     if not all_results:
         print("No models were evaluated.")
         if user_killed:
             sys.exit(130)
+        if crashed:
+            if prompt_stop_pod():
+                stop_runpod()
         sys.exit(1)
 
     # Write combined outputs to experiments/evaluation/
