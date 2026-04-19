@@ -300,6 +300,53 @@ def write_report(all_results, save_path):
         f.write('\n'.join(lines))
 
 
+def stop_runpod():
+    """Stop the current RunPod instance via runpodctl."""
+    try:
+        subprocess.run(['runpodctl', 'stop', 'pod'], check=True, timeout=30)
+        print("RunPod pod stopped.")
+    except FileNotFoundError:
+        print("runpodctl not found — cannot auto-stop pod.")
+        print("Stop manually at https://www.runpod.io/console/pods")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to stop pod: {e}")
+    except subprocess.TimeoutExpired:
+        print("Timed out trying to stop pod.")
+
+
+def prompt_stop_pod(timeout_seconds=120):
+    """Ask the user whether to stop the RunPod pod.
+
+    Returns True if the pod should be stopped:
+      - User types y/yes/Enter -> stop
+      - No response within timeout_seconds -> stop
+      - User types n/no -> don't stop
+    """
+    import select
+
+    print(f"\nStop RunPod pod to avoid charges? [Y/n] (auto-stops in {timeout_seconds}s) ", end='', flush=True)
+
+    try:
+        if hasattr(select, 'select'):
+            ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
+            if ready:
+                answer = sys.stdin.readline().strip().lower()
+            else:
+                print("\nNo response — stopping pod.")
+                return True
+        else:
+            answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nNo input available — stopping pod.")
+        return True
+
+    if answer in ('n', 'no'):
+        print("Pod will keep running.")
+        return False
+
+    return True
+
+
 def launch_in_tmux(session_name, argv):
     """Re-launch this script inside a tmux session with pod auto-stop."""
     inner_args = []
@@ -318,61 +365,7 @@ def launch_in_tmux(session_name, argv):
 
     wrapper_script = f"""#!/bin/bash
 cd {shlex.quote(project_dir)}
-
-USER_KILLED=0
-trap 'USER_KILLED=1; exit 130' INT TERM
-
 {inner_cmd}
-EXIT_CODE=$?
-
-if [ $USER_KILLED -eq 1 ]; then
-    echo ""
-    echo "User interrupted — pod will keep running."
-    exit $EXIT_CODE
-fi
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo ""
-    echo "All evaluations completed successfully."
-else
-    echo ""
-    echo "Evaluations finished with errors (exit code $EXIT_CODE)."
-fi
-
-# Copy results to Google Drive
-echo ""
-echo "Syncing evaluation results to Google Drive..."
-echo 'alias rclone="rclone --config /workspace/rclone.conf"' >> ~/.bashrc
-source ~/.bashrc
-rclone --config /workspace/rclone.conf copy experiments/evaluation/ gdrive:adv-com-vis-final/evaluation --progress
-RCLONE_EXIT=$?
-if [ $RCLONE_EXIT -eq 0 ]; then
-    echo "Drive sync complete."
-else
-    echo "Drive sync failed (exit code $RCLONE_EXIT). Files are still in experiments/ locally."
-fi
-
-echo ""
-echo -n "Stop RunPod pod to avoid charges? [Y/n] (auto-stops in 120s) "
-read -t 120 ANSWER
-READ_EXIT=$?
-
-if [ $READ_EXIT -ne 0 ]; then
-    echo ""
-    echo "No response — stopping pod."
-    runpodctl stop pod 2>/dev/null || echo "runpodctl not found. Stop manually."
-    exit $EXIT_CODE
-fi
-
-ANSWER=$(echo "$ANSWER" | tr '[:upper:]' '[:lower:]')
-if [ "$ANSWER" = "n" ] || [ "$ANSWER" = "no" ]; then
-    echo "Pod will keep running."
-else
-    echo "Stopping pod..."
-    runpodctl stop pod 2>/dev/null || echo "runpodctl not found. Stop manually."
-fi
-
-exit $EXIT_CODE
 """
 
     wrapper_path = os.path.join(project_dir, '.tmux_eval_wrapper.sh')
@@ -489,20 +482,32 @@ def main():
     best = max(all_results, key=lambda r: r['test_top1'])
     print(f"\nBest: {best['description']} (top-1: {best['test_top1']:.4f})")
 
-    # Sync results to Google Drive
-    print(f"\nSyncing evaluation results to Google Drive...")
-    rclone_result = subprocess.run(
-        ['rclone', '--config', '/workspace/rclone.conf', 'copy',
-         'experiments/evaluation/', 'gdrive:adv-com-vis-final/evaluation', '--progress'],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-    )
-    if rclone_result.returncode == 0:
-        print("Drive sync complete.")
-    else:
-        print(f"Drive sync failed (exit code {rclone_result.returncode}). Files are still in experiments/evaluation/ locally.")
-
+    # Post-run logic
     if user_killed:
+        print("\nUser interrupted — pod will keep running.")
         sys.exit(130)
+
+    all_evaluated = len(all_results) == len(checkpoints)
+
+    if all_evaluated:
+        # All models evaluated successfully — sync to Drive
+        print(f"\nSyncing evaluation results to Google Drive...")
+        rclone_result = subprocess.run(
+            ['rclone', '--config', '/workspace/rclone.conf', 'copy',
+             'experiments/evaluation/', 'gdrive:adv-com-vis-final/evaluation', '--progress'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        if rclone_result.returncode == 0:
+            print("Drive sync complete.")
+        else:
+            print(f"Drive sync failed (exit code {rclone_result.returncode}). "
+                  f"Files are still in experiments/evaluation/ locally.")
+    else:
+        print("\nSome evaluations failed. Skipping Drive sync — inspect outputs manually.")
+
+    # Prompt to stop pod
+    if prompt_stop_pod():
+        stop_runpod()
 
 
 if __name__ == '__main__':

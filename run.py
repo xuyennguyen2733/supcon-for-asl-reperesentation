@@ -25,7 +25,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 BASE_DIR = os.path.join('experiments', 'trained_models')
 
 # Signals that indicate user-initiated kill (Ctrl+C, terminal kill, etc.)
-USER_KILL_SIGNALS = {signal.SIGINT, signal.SIGTERM}
+
 
 
 def get_experiments(epochs, pretrain_epochs):
@@ -314,65 +314,11 @@ def launch_in_tmux(session_name, argv):
     # 1. Runs the experiments
     # 2. On natural exit (finish/crash): prompts to stop pod
     # 3. On user kill (Ctrl+C / SIGINT): just exits, does NOT stop pod
+    # Thin wrapper: runs the Python script, which handles all
+    # post-run logic (rclone, pod stop) in main().
     wrapper_script = f"""#!/bin/bash
 cd {shlex.quote(project_dir)}
-
-# Track whether exit was user-initiated
-USER_KILLED=0
-trap 'USER_KILLED=1; exit 130' INT TERM
-
 {inner_cmd}
-EXIT_CODE=$?
-
-if [ $USER_KILLED -eq 1 ]; then
-    echo ""
-    echo "User interrupted — pod will keep running."
-    exit $EXIT_CODE
-fi
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo ""
-    echo "All experiments completed successfully."
-else
-    echo ""
-    echo "Experiments finished with errors (exit code $EXIT_CODE)."
-fi
-
-# Copy trained models to Google Drive
-echo ""
-echo "Syncing trained models to Google Drive..."
-echo 'alias rclone="rclone --config /workspace/rclone.conf"' >> ~/.bashrc
-source ~/.bashrc
-rclone --config /workspace/rclone.conf copy experiments/trained_models/ gdrive:adv-com-vis-final/trained_models --progress
-RCLONE_EXIT=$?
-if [ $RCLONE_EXIT -eq 0 ]; then
-    echo "Drive sync complete."
-else
-    echo "Drive sync failed (exit code $RCLONE_EXIT). Files are still in experiments/trained_models/ locally."
-fi
-
-# Prompt to stop pod (auto-stop after 2 minutes of no input)
-echo ""
-echo -n "Stop RunPod pod to avoid charges? [Y/n] (auto-stops in 120s) "
-read -t 120 ANSWER
-READ_EXIT=$?
-
-if [ $READ_EXIT -ne 0 ]; then
-    echo ""
-    echo "No response — stopping pod."
-    runpodctl stop pod 2>/dev/null || echo "runpodctl not found. Stop manually."
-    exit $EXIT_CODE
-fi
-
-ANSWER=$(echo "$ANSWER" | tr '[:upper:]' '[:lower:]')
-if [ "$ANSWER" = "n" ] || [ "$ANSWER" = "no" ]; then
-    echo "Pod will keep running."
-else
-    echo "Stopping pod..."
-    runpodctl stop pod 2>/dev/null || echo "runpodctl not found. Stop manually."
-fi
-
-exit $EXIT_CODE
 """
 
     wrapper_path = os.path.join(project_dir, '.tmux_run_wrapper.sh')
@@ -488,23 +434,32 @@ def main():
     if any(e['pretrain_cmd'] for e in experiments):
         print(f"  pretrained_encoder.pt — pre-trained weights (experiments 6, 7)")
 
-    # Sync trained models to Google Drive
-    print(f"\nSyncing trained models to Google Drive...")
-    rclone_result = subprocess.run(
-        ['rclone', '--config', '/workspace/rclone.conf', 'copy',
-         'experiments/trained_models/', 'gdrive:adv-com-vis-final/trained_models', '--progress'],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-    )
-    if rclone_result.returncode == 0:
-        print("Drive sync complete.")
-    else:
-        print(f"Drive sync failed (exit code {rclone_result.returncode}). Files are still in experiments/trained_models/ locally.")
-
-    # Exit code for the wrapper script to use
+    # Post-run logic depends on how we got here
     if user_killed:
-        sys.exit(130)  # convention for SIGINT
-    elif not all_success:
-        sys.exit(1)
+        # User interrupted — do nothing, just exit
+        print("\nUser interrupted — pod will keep running.")
+        sys.exit(130)
+
+    if all_success:
+        # All experiments passed — sync to Drive
+        print(f"\nSyncing trained models to Google Drive...")
+        rclone_result = subprocess.run(
+            ['rclone', '--config', '/workspace/rclone.conf', 'copy',
+             'experiments/trained_models/', 'gdrive:adv-com-vis-final/trained_models', '--progress'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        if rclone_result.returncode == 0:
+            print("Drive sync complete.")
+        else:
+            print(f"Drive sync failed (exit code {rclone_result.returncode}). "
+                  f"Files are still in experiments/trained_models/ locally.")
+    else:
+        # Some experiments crashed — skip download, output may be corrupted
+        print("\nSome experiments failed. Skipping Drive sync — inspect outputs manually.")
+
+    # Prompt to stop pod
+    if prompt_stop_pod():
+        stop_runpod()
 
 
 if __name__ == '__main__':
