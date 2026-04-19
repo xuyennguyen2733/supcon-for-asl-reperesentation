@@ -163,10 +163,18 @@ def generate_tsne(embeddings, labels, label_names, save_path):
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Build label mapping from training set so test indices match
-    train_dir = os.path.join('data', 'keypoints', 'train')
-    train_label_names = sorted(os.listdir(train_dir))
-    train_label_to_idx = {label: idx for idx, label in enumerate(train_label_names)}
+    # Load label mapping — try saved file next to checkpoint, fall back to train dir
+    label_map_path = os.path.join(os.path.dirname(args.checkpoint), 'label_to_idx.json')
+    if os.path.isfile(label_map_path):
+        with open(label_map_path) as f:
+            train_label_to_idx = json.load(f)
+        train_label_names = sorted(train_label_to_idx, key=train_label_to_idx.get)
+        print(f"Loaded label mapping from {label_map_path}")
+    else:
+        train_dir = os.path.join('data', 'keypoints', 'train')
+        train_label_names = sorted(os.listdir(train_dir))
+        train_label_to_idx = {label: idx for idx, label in enumerate(train_label_names)}
+        print(f"Label mapping from training directory ({len(train_label_names)} classes)")
 
     test_dir = os.path.join('data', 'keypoints', 'test')
     test_dataset = ASLKeypointDataset(test_dir, augment=False, label_to_idx=train_label_to_idx)

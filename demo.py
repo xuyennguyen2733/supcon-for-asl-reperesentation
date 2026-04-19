@@ -237,11 +237,8 @@ def load_models(checkpoint_paths, device):
 
     Returns list of (name, model, label_names) tuples.
     """
+    import json
     from models.encoder import SignLanguageEncoder
-
-    train_dir = os.path.join('data', 'keypoints', 'train')
-    label_names = sorted(os.listdir(train_dir))
-    num_classes = len(label_names)
 
     models = []
     for cp in checkpoint_paths:
@@ -251,6 +248,16 @@ def load_models(checkpoint_paths, device):
 
         config = infer_config(cp)
         name = short_name(cp)
+
+        # Load label mapping for this model
+        label_map_path = os.path.join(os.path.dirname(cp), 'label_to_idx.json')
+        if os.path.isfile(label_map_path):
+            with open(label_map_path) as f:
+                label_to_idx = json.load(f)
+            label_names = sorted(label_to_idx, key=label_to_idx.get)
+        else:
+            train_dir = os.path.join('data', 'keypoints', 'train')
+            label_names = sorted(os.listdir(train_dir))
 
         checkpoint = torch.load(cp, weights_only=False)
         trained_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]

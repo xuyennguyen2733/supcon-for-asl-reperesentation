@@ -38,9 +38,11 @@ class ASLKeypointDataset(Dataset):
         else:
             self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
 
-        # Collect base samples per label
+        # Collect base samples per label (skip labels not in label_to_idx)
         base_samples = []
         for label in self.labels:
+            if label not in self.label_to_idx:
+                continue
             label_dir = os.path.join(keypoints_dir, label)
             for sample_id in sorted(os.listdir(label_dir)):
                 sample_dir = os.path.join(label_dir, sample_id)
@@ -296,6 +298,12 @@ def main(args):
 
     # Checkpointing
     os.makedirs(args.save_dir, exist_ok=True)
+
+    # Save label mapping so eval can load it without needing the training data
+    import json
+    with open(os.path.join(args.save_dir, 'label_to_idx.json'), 'w') as f:
+        json.dump(train_dataset.label_to_idx, f, indent=2)
+
     best_val_top1 = 0.0
 
     for epoch in range(1, args.epochs + 1):
