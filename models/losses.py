@@ -46,6 +46,9 @@ class SupConLoss(nn.Module):
         # Log-softmax over each row (denominator = all non-self entries)
         log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
 
+        # Zero out -inf on diagonal so that 0 * -inf doesn't produce NaN
+        log_prob = log_prob.masked_fill(self_mask, 0.0)
+
         # Mean of log-prob over positive pairs for each anchor
         pos_log_prob = (log_prob * pos_mask).sum(dim=1) / pos_mask.sum(dim=1).clamp(min=1)
 

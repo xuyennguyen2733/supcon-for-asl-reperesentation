@@ -1,11 +1,12 @@
 import os
+import argparse
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from utils.data_utils import form_pose_triplet_units
 from utils.augmentation_utils import random_augment
 from models.encoder import SignLanguageEncoder
+from models.losses import TotalLoss
 
 train_dir = os.path.join('data', 'keypoints', 'train')
 test_dir = os.path.join('data', 'keypoints', 'test')
@@ -89,19 +90,160 @@ def collate_eval(batch):
     return tokens, mask, torch.stack(labels)
 
 
+def train_one_epoch(model, dataloader, criterion, optimizer, device):
+    model.train()
+    total_loss_sum = 0.0
+    supcon_loss_sum = 0.0
+    ce_loss_sum = 0.0
+    correct = 0
+    total = 0
+
+    for tokens1, mask1, tokens2, mask2, labels in dataloader:
+        tokens1, mask1 = tokens1.to(device), mask1.to(device)
+        tokens2, mask2 = tokens2.to(device), mask2.to(device)
+        labels = labels.to(device)
+
+        proj1, logits1 = model(tokens1, mask1)
+        proj2, logits2 = model(tokens2, mask2)
+
+        loss, supcon_loss, ce_loss = criterion(proj1, proj2, logits1, logits2, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        total_loss_sum += loss.item() * labels.size(0)
+        supcon_loss_sum += supcon_loss.item() * labels.size(0)
+        ce_loss_sum += ce_loss.item() * labels.size(0)
+
+        # Accuracy from average logits of both views
+        avg_logits = (logits1 + logits2) / 2
+        correct += (avg_logits.argmax(dim=1) == labels).sum().item()
+        total += labels.size(0)
+
+    n = total
+    return {
+        'loss': total_loss_sum / n,
+        'supcon_loss': supcon_loss_sum / n,
+        'ce_loss': ce_loss_sum / n,
+        'acc': correct / n,
+    }
+
+
+@torch.no_grad()
+def evaluate(model, dataloader, device):
+    model.eval()
+    correct_top1 = 0
+    correct_top5 = 0
+    total = 0
+
+    for tokens, mask, labels in dataloader:
+        tokens, mask = tokens.to(device), mask.to(device)
+        labels = labels.to(device)
+
+        _, logits = model(tokens, mask)
+
+        correct_top1 += (logits.argmax(dim=1) == labels).sum().item()
+        top5_preds = logits.topk(min(5, logits.size(1)), dim=1).indices
+        correct_top5 += sum(labels[i] in top5_preds[i] for i in range(labels.size(0)))
+        total += labels.size(0)
+
+    return {
+        'top1': correct_top1 / total,
+        'top5': correct_top5 / total,
+    }
+
+
+def main(args):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # Datasets
+    train_dataset = ASLKeypointDataset(train_dir, augment=True)
+    val_dataset = ASLKeypointDataset(val_dir, augment=False)
+    test_dataset = ASLKeypointDataset(test_dir, augment=False)
+
+    num_classes = len(train_dataset.labels)
+    print(f"Classes: {num_classes}, Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                              collate_fn=collate_augmented, num_workers=args.num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                            collate_fn=collate_eval, num_workers=args.num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
+                             collate_fn=collate_eval, num_workers=args.num_workers)
+
+    # Model
+    model = SignLanguageEncoder(num_classes=num_classes, use_rope=args.use_rope).to(device)
+
+    # Load pre-trained encoder weights if provided
+    if args.pretrained_path:
+        checkpoint = torch.load(args.pretrained_path, weights_only=True)
+        model.load_state_dict(checkpoint['encoder_state_dict'], strict=False)
+        print(f"Loaded pre-trained encoder from {args.pretrained_path} "
+              f"(epoch {checkpoint['epoch']}, loss {checkpoint['loss']:.6f})")
+
+    criterion = TotalLoss(temperature=args.temperature, ce_weight=args.ce_weight)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # Linear warmup then cosine decay
+    warmup_epochs = args.warmup_epochs
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        progress = (epoch - warmup_epochs) / max(1, args.epochs - warmup_epochs)
+        return 0.5 * (1 + np.cos(np.pi * progress))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # Checkpointing
+    os.makedirs(args.save_dir, exist_ok=True)
+    best_val_top1 = 0.0
+
+    for epoch in range(1, args.epochs + 1):
+        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        val_metrics = evaluate(model, val_loader, device)
+        scheduler.step()
+
+        lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch:3d}/{args.epochs} | "
+              f"lr {lr:.6f} | "
+              f"train loss {train_metrics['loss']:.4f} "
+              f"(supcon {train_metrics['supcon_loss']:.4f}, ce {train_metrics['ce_loss']:.4f}) | "
+              f"train acc {train_metrics['acc']:.4f} | "
+              f"val top1 {val_metrics['top1']:.4f}, top5 {val_metrics['top5']:.4f}")
+
+        # Save best model
+        if val_metrics['top1'] > best_val_top1:
+            best_val_top1 = val_metrics['top1']
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_top1': best_val_top1,
+            }, os.path.join(args.save_dir, 'best_model.pt'))
+            print(f"  -> Saved new best model (val top1: {best_val_top1:.4f})")
+
+    # Test with best model
+    checkpoint = torch.load(os.path.join(args.save_dir, 'best_model.pt'), weights_only=True)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    test_metrics = evaluate(model, test_loader, device)
+    print(f"\nTest Results (best model from epoch {checkpoint['epoch']}): "
+          f"top1 {test_metrics['top1']:.4f}, top5 {test_metrics['top5']:.4f}")
+
+
 if __name__ == '__main__':
-    dataset = ASLKeypointDataset(train_dir, augment=True)
-    print(f"Dataset size: {len(dataset)}")
-    print(f"Labels: {dataset.labels}")
-
-    view1, view2, label = dataset[0]
-    print(f"View 1 shape: {view1.shape}")
-    print(f"View 2 shape: {view2.shape}")
-    print(f"Sample label: {label}")
-
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_augmented)
-    for batch_v1, mask1, batch_v2, mask2, batch_labels in dataloader:
-        print(f"    Batch view 1: {batch_v1.shape}, mask: {mask1.shape}")
-        print(f"    Batch view 2: {batch_v2.shape}, mask: {mask2.shape}")
-        print(f"    Batch labels: {batch_labels}")
-        break
+    parser = argparse.ArgumentParser(description='Train ASL SupCon model')
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
+    parser.add_argument('--temperature', type=float, default=0.07)
+    parser.add_argument('--ce_weight', type=float, default=0.1)
+    parser.add_argument('--warmup_epochs', type=int, default=10)
+    parser.add_argument('--use_rope', action='store_true', help='Use RoPE instead of absolute positional encoding')
+    parser.add_argument('--pretrained_path', type=str, default=None, help='Path to pre-trained encoder checkpoint')
+    parser.add_argument('--num_workers', type=int, default=0)
+    parser.add_argument('--save_dir', type=str, default='checkpoints')
+    args = parser.parse_args()
+    main(args)

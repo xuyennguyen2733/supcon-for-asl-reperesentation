@@ -26,20 +26,83 @@ kaggle datasets download -d risangbaskoro/wlasl-processed -p data/videos_wlasl10
 
 ## Tools
 
-All tool scripts are run from the project root using `python -m`:
+All tool scripts must be run from the project root using `python -m` (not `python tools/...`), so that the `utils` and `models` packages resolve correctly.
 
-### `python -m tools.video_to_keypoints`
+### Extract keypoints from WLASL-100
 
-Extracts MediaPipe Holistic keypoints from videos in `data/videos/`, normalizes them (crops to upper body), saves as `.npy` files to `data/keypoints/`, and renders skeleton visualizations to `data/keypoint_renders/`.
+```bash
+python -m tools.wlasl100_to_keypoints [--num_labels 100]
+```
 
-### `python -m tools.visualize_augmentations`
+Extracts MediaPipe Holistic keypoints from WLASL-100 videos, normalizes them (crops to upper body), saves as `.npy` files to `data/keypoints/{train,val,test}/{gloss}/{video_id}/`, and renders skeleton visualizations to `data/keypoint_renders/`.
 
-Loads saved keypoints from `data/keypoints/`, applies random augmentations (horizontal flip, speed change) to create two views per sample, and renders them to `data/augmented_renders/` for visual inspection.
+### Extract keypoints from custom videos
+
+```bash
+python -m tools.sample_video_to_keypoints
+```
+
+Processes custom video samples from `data/samples/videos/{label}/*.mp4`, extracts and normalizes keypoints, saves to `data/samples/keypoints/`, and renders visualizations.
+
+### Visualize augmentations
+
+```bash
+python -m tools.visualize_augmentations
+```
+
+Loads saved keypoints from `data/keypoints/train/`, applies random augmentations (horizontal flip, speed change) to create two views per sample, and renders them to `data/augmented_renders/` for visual inspection.
 
 ## Training
 
+### 1. Pre-training (optional, BERT-style masked pose modeling)
+
+Pre-trains the encoder by masking 15% of frame tokens and learning to reconstruct them (MSE loss). This gives the encoder an understanding of temporal pose dynamics before it sees any labels.
+
 ```bash
-python train.py
+# With absolute positional encoding
+python -m models.pretrain --epochs 50 --save_dir checkpoints/pretrained
+
+# With RoPE (Rotary Position Embeddings)
+python -m models.pretrain --epochs 50 --use_rope --save_dir checkpoints/pretrained_rope
 ```
 
-Loads normalized keypoints, applies augmentations to produce two views per sample (for supervised contrastive learning), and trains the transformer encoder with SupCon + cross-entropy loss.
+### 2. Fine-tuning / Training
+
+Trains the transformer encoder with supervised contrastive loss + cross-entropy loss. Each sample is augmented twice to produce two views for contrastive learning.
+
+```bash
+python train.py [OPTIONS]
+```
+
+**Options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--epochs` | 100 | Number of training epochs |
+| `--batch_size` | 32 | Batch size |
+| `--lr` | 1e-3 | Learning rate |
+| `--weight_decay` | 1e-4 | AdamW weight decay |
+| `--temperature` | 0.07 | SupCon temperature |
+| `--ce_weight` | 0.1 | Weight of CE loss (lambda) |
+| `--warmup_epochs` | 10 | LR warmup epochs |
+| `--use_rope` | off | Use RoPE instead of absolute positional encoding |
+| `--pretrained_path` | None | Path to pre-trained encoder checkpoint |
+| `--save_dir` | checkpoints | Directory for saving model checkpoints |
+
+### Experiment Configurations
+
+```bash
+# Baseline: SupCon + CE
+python train.py --save_dir checkpoints/supcon_ce
+
+# Pre-trained + SupCon + CE
+python -m models.pretrain --epochs 50 --save_dir checkpoints/pretrained
+python train.py --pretrained_path checkpoints/pretrained/pretrained_encoder.pt --save_dir checkpoints/pretrained_supcon_ce
+
+# RoPE + SupCon + CE
+python train.py --use_rope --save_dir checkpoints/rope_supcon_ce
+
+# Pre-trained + RoPE + SupCon + CE
+python -m models.pretrain --epochs 50 --use_rope --save_dir checkpoints/pretrained_rope
+python train.py --use_rope --pretrained_path checkpoints/pretrained_rope/pretrained_encoder.pt --save_dir checkpoints/pretrained_rope_supcon_ce
+```
