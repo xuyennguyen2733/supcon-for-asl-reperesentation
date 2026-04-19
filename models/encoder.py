@@ -109,8 +109,8 @@ class RoPETransformerEncoderLayer(nn.Module):
 
 class SignLanguageEncoder(nn.Module):
     def __init__(self, num_classes, body_dim=69, left_hand_dim=63, right_hand_dim=63,
-                 emb_dim=64, nhead=8, num_layers=4, proj_dim=128, max_T=512,
-                 dropout=0.1, use_rope=False, use_triplet=True):
+                 emb_dim=64, nhead=8, num_layers=2, proj_dim=128, max_T=512,
+                 dropout=0.2, use_rope=False, use_triplet=True):
         super().__init__()
         self.use_rope = use_rope
         self.use_triplet = use_triplet
@@ -136,7 +136,7 @@ class SignLanguageEncoder(nn.Module):
 
         if use_rope:
             # RoPE: positions encoded via rotations inside attention — no pos_encoding needed
-            layers = [RoPETransformerEncoderLayer(d_model, nhead, d_model * 4, dropout, max_T)
+            layers = [RoPETransformerEncoderLayer(d_model, nhead, d_model * 2, dropout, max_T)
                       for _ in range(num_layers)]
             self.transformer = nn.ModuleList(layers)
         else:
@@ -145,7 +145,7 @@ class SignLanguageEncoder(nn.Module):
             nn.init.normal_(self.pos_encoding, std=0.02)
 
             encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4,
+                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 2,
                 dropout=dropout, batch_first=True
             )
             self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
