@@ -204,12 +204,15 @@ def run_experiment(experiment, gpu_id=None):
     return name, True, f"Done. Log: {log_path}"
 
 
-def run_experiments(experiments, gpu_ids):
+def run_experiments(experiments, gpu_ids, jobs_per_gpu=1):
     """Run all experiments, returns True if all succeeded."""
     all_success = True
     os.makedirs(BASE_DIR, exist_ok=True)
 
-    if len(gpu_ids) <= 1:
+    max_workers = len(gpu_ids) * jobs_per_gpu
+
+    if max_workers <= 1:
+        # Sequential
         gpu = gpu_ids[0]
         for i, exp in enumerate(experiments, 1):
             gpu_label = f"GPU {gpu}" if gpu is not None else "CPU"
@@ -220,7 +223,8 @@ def run_experiments(experiments, gpu_ids):
                 all_success = False
             print(f"[{i}/{len(experiments)}] {status}: {name} — {msg}\n")
     else:
-        with ProcessPoolExecutor(max_workers=len(gpu_ids)) as executor:
+        # Parallel: distribute experiments across GPUs, jobs_per_gpu each
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for i, exp in enumerate(experiments):
                 gpu = gpu_ids[i % len(gpu_ids)]
@@ -354,6 +358,8 @@ def main():
     parser.add_argument('--dry_run', action='store_true', help='Print commands without running')
     parser.add_argument('--only', type=int, nargs='+', default=None,
                         help='Run only specific experiments by number (e.g. --only 1 4 5)')
+    parser.add_argument('--jobs_per_gpu', type=int, default=1,
+                        help='Number of experiments to run concurrently per GPU (default: 1)')
     parser.add_argument('--tmux', type=str, default=None, metavar='SESSION',
                         help='Run inside a tmux session (survives disconnects, auto-stops RunPod when done)')
     args = parser.parse_args()
@@ -382,9 +388,11 @@ def main():
         gpu_ids = list(range(num_gpus))
         print(f"Detected {num_gpus} GPU(s): {[torch.cuda.get_device_name(i) for i in gpu_ids]}")
 
+    total_workers = len(gpu_ids) * args.jobs_per_gpu
     # Print experiment plan
     print(f"\n{'='*70}")
-    print(f"EXPERIMENT PLAN: {len(experiments)} experiments, {len(gpu_ids)} GPU(s)")
+    print(f"EXPERIMENT PLAN: {len(experiments)} experiments, {len(gpu_ids)} GPU(s), "
+          f"{args.jobs_per_gpu} job(s)/GPU = {total_workers} concurrent")
     print(f"{'='*70}")
     for i, exp in enumerate(experiments, 1):
         pretrain_tag = " [+pretrain]" if exp['pretrain_cmd'] else ""
@@ -417,7 +425,7 @@ def main():
     print(f"{'='*70}\n")
 
     try:
-        all_success = run_experiments(experiments, gpu_ids)
+        all_success = run_experiments(experiments, gpu_ids, args.jobs_per_gpu)
     except KeyboardInterrupt:
         user_killed = True
         print("\n\nUser interrupted — stopping experiments.")
