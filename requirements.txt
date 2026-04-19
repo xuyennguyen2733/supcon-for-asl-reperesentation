@@ -1,5 +1,8 @@
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch>=2.0.0
+numpy
 opencv-python
 mediapipe==0.10.14
 kaggle
+scikit-learn
+matplotlib

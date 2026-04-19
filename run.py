@@ -130,6 +130,39 @@ def get_experiments(epochs, pretrain_epochs):
     return experiments
 
 
+def _run_with_progress(cmd, env, log_file, tag, phase):
+    """Run subprocess, log everything, print brief epoch progress to console."""
+    proc = subprocess.Popen(
+        cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=os.path.dirname(os.path.abspath(__file__)), text=True, bufsize=1,
+    )
+    for line in proc.stdout:
+        log_file.write(line)
+        log_file.flush()
+        s = line.strip()
+        if not s:
+            continue
+        # Epoch lines: print every 10th, first, and last
+        if s.startswith('Epoch'):
+            try:
+                parts = s.split('|')[0].split('/')
+                epoch = int(parts[0].replace('Epoch', '').strip())
+                total = int(parts[1].strip())
+                if epoch == 1 or epoch % 10 == 0 or epoch == total:
+                    val = ''
+                    if 'val top1' in s:
+                        val = s[s.index('val top1'):]
+                    print(f"  [{tag}] {phase} epoch {epoch}/{total}  {val}")
+            except (ValueError, IndexError):
+                pass
+        elif 'best model' in s.lower():
+            print(f"  [{tag}] {s.split('->')[1].strip() if '->' in s else s}")
+        elif 'error' in s.lower() or 'traceback' in s.lower():
+            print(f"  [{tag}] {s}")
+    proc.wait()
+    return proc.returncode
+
+
 def run_experiment(experiment, gpu_id=None):
     """Run a single experiment (pretrain if needed, then train).
 
@@ -147,32 +180,26 @@ def run_experiment(experiment, gpu_id=None):
     with open(log_path, 'w') as log_file:
         # Pre-training step (if needed)
         if experiment['pretrain_cmd']:
+            print(f"  [{name}] Pre-training...")
             log_file.write(f"=== PRE-TRAINING: {name} ===\n")
             log_file.write(f"Command: {' '.join(experiment['pretrain_cmd'])}\n\n")
             log_file.flush()
 
-            result = subprocess.run(
-                experiment['pretrain_cmd'], env=env,
-                stdout=log_file, stderr=subprocess.STDOUT,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-            )
-            if result.returncode != 0:
-                return name, False, f"Pre-training failed (exit code {result.returncode}). See {log_path}"
+            rc = _run_with_progress(experiment['pretrain_cmd'], env, log_file, name, 'pretrain')
+            if rc != 0:
+                return name, False, f"Pre-training failed (exit code {rc}). See {log_path}"
 
             log_file.write(f"\n\n")
 
         # Training step
+        print(f"  [{name}] Training...")
         log_file.write(f"=== TRAINING: {name} ===\n")
         log_file.write(f"Command: {' '.join(experiment['train_cmd'])}\n\n")
         log_file.flush()
 
-        result = subprocess.run(
-            experiment['train_cmd'], env=env,
-            stdout=log_file, stderr=subprocess.STDOUT,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-        )
-        if result.returncode != 0:
-            return name, False, f"Training failed (exit code {result.returncode}). See {log_path}"
+        rc = _run_with_progress(experiment['train_cmd'], env, log_file, name, 'train')
+        if rc != 0:
+            return name, False, f"Training failed (exit code {rc}). See {log_path}"
 
     return name, True, f"Done. Log: {log_path}"
 
@@ -271,7 +298,7 @@ def launch_in_tmux(session_name, argv):
     # Build the inner command: same args but without --tmux <session>
     inner_args = []
     skip_next = False
-    for i, arg in enumerate(argv[1:]):
+    for arg in argv[1:]:
         if skip_next:
             skip_next = False
             continue
@@ -350,18 +377,15 @@ exit $EXIT_CODE
         print(f"Or kill it first: tmux kill-session -t {session_name}")
         sys.exit(1)
 
-    print(f"Launching experiments in tmux session: {session_name}")
-    print(f"Detach with: Ctrl+B then D")
-    print(f"Re-attach with: tmux attach -t {session_name}")
-    print()
-
-    # Start tmux session running the wrapper
+    # Start tmux session detached — script runs in background
     subprocess.run([
         'tmux', 'new-session', '-d', '-s', session_name, f'bash {shlex.quote(wrapper_path)}'
     ], check=True)
 
-    # Attach to it
-    os.execvp('tmux', ['tmux', 'attach', '-t', session_name])
+    print(f"Experiments running in tmux session: {session_name}")
+    print(f"  Attach:  tmux attach -t {session_name}")
+    print(f"  Detach:  Ctrl+B then D")
+    print(f"  Logs:    tail -f experiments/trained_models/*/train.log")
 
 
 def main():
@@ -430,7 +454,7 @@ def main():
 
     # Run experiments
     print(f"\n{'='*70}")
-    print("RUNNING EXPERIMENTS")
+    print("TRAINING MODELS FOR EXPERIMENTS")
     print(f"{'='*70}\n")
 
     try:
