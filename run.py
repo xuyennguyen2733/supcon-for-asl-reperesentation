@@ -338,6 +338,19 @@ else
     echo "Experiments finished with errors (exit code $EXIT_CODE)."
 fi
 
+# Copy trained models to Google Drive
+echo ""
+echo "Syncing trained models to Google Drive..."
+echo 'alias rclone="rclone --config /workspace/rclone.conf"' >> ~/.bashrc
+source ~/.bashrc
+rclone --config /workspace/rclone.conf copy experiments/trained_models/ gdrive:adv-com-vis-final/trained_models --progress
+RCLONE_EXIT=$?
+if [ $RCLONE_EXIT -eq 0 ]; then
+    echo "Drive sync complete."
+else
+    echo "Drive sync failed (exit code $RCLONE_EXIT). Files are still in experiments/trained_models/ locally."
+fi
+
 # Prompt to stop pod (auto-stop after 2 minutes of no input)
 echo ""
 echo -n "Stop RunPod pod to avoid charges? [Y/n] (auto-stops in 120s) "
@@ -474,6 +487,18 @@ def main():
     print(f"  train.log      — full training output")
     if any(e['pretrain_cmd'] for e in experiments):
         print(f"  pretrained_encoder.pt — pre-trained weights (experiments 6, 7)")
+
+    # Sync trained models to Google Drive
+    print(f"\nSyncing trained models to Google Drive...")
+    rclone_result = subprocess.run(
+        ['rclone', '--config', '/workspace/rclone.conf', 'copy',
+         'experiments/trained_models/', 'gdrive:adv-com-vis-final/trained_models', '--progress'],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    if rclone_result.returncode == 0:
+        print("Drive sync complete.")
+    else:
+        print(f"Drive sync failed (exit code {rclone_result.returncode}). Files are still in experiments/trained_models/ locally.")
 
     # Exit code for the wrapper script to use
     if user_killed:

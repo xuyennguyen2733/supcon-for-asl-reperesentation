@@ -6,8 +6,8 @@ For each model:
   - tsne.png              — t-SNE embedding visualization
 
 Combined outputs:
-  - experiments/eval_summary.csv  — one row per model, all metrics
-  - experiments/eval_report.md    — human-readable comparison report
+  - experiments/evaluation/eval_summary.csv  — one row per model, all metrics
+  - experiments/evaluation/eval_report.md    — human-readable comparison report
 
 Usage:
     python run_eval.py                              # evaluate all models in experiments/trained_models/
@@ -40,6 +40,7 @@ from eval import (
 )
 
 BASE_DIR = os.path.join('experiments', 'trained_models')
+EVAL_DIR = os.path.join('experiments', 'evaluation')
 
 # Map experiment folder names to architecture flags
 EXPERIMENT_CONFIG = {
@@ -127,13 +128,16 @@ def save_predictions_csv(logits, labels, label_names, save_path):
 
 
 def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
-    """Evaluate a single model. Returns results dict."""
-    model_dir = os.path.dirname(checkpoint_path)
-    config = infer_config(model_dir)
-    description = get_description(model_dir)
+    """Evaluate a single model. Saves outputs to EVAL_DIR/{model_name}/."""
+    model_src_dir = os.path.dirname(checkpoint_path)
+    config = infer_config(model_src_dir)
+    description = get_description(model_src_dir)
     num_classes = len(test_dataset.labels)
 
-    tag = os.path.basename(model_dir)
+    tag = os.path.basename(model_src_dir)
+    out_dir = os.path.join(EVAL_DIR, tag)
+    os.makedirs(out_dir, exist_ok=True)
+
     print(f"  [{tag}] Evaluating {description}...")
 
     # Build model
@@ -154,12 +158,12 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
     per_class = compute_per_class_accuracy(data['logits'], data['labels'], test_dataset.labels)
     dist = compute_distance_ratio(data['embeddings'], data['labels'])
 
-    # Save per-model outputs
-    predictions_path = os.path.join(model_dir, 'predictions.csv')
+    # Save per-model outputs to experiments/evaluation/{model_name}/
+    predictions_path = os.path.join(out_dir, 'predictions.csv')
     save_predictions_csv(data['logits'], data['labels'], test_dataset.labels, predictions_path)
 
     results = {
-        'experiment': os.path.basename(model_dir),
+        'experiment': tag,
         'description': description,
         'checkpoint': checkpoint_path,
         'config': config,
@@ -172,11 +176,11 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
         'distance_ratio': dist['ratio'],
         'per_class': per_class,
     }
-    results_path = os.path.join(model_dir, 'eval_results.json')
+    results_path = os.path.join(out_dir, 'eval_results.json')
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
 
-    tsne_path = os.path.join(model_dir, 'tsne.png')
+    tsne_path = os.path.join(out_dir, 'tsne.png')
     generate_tsne(data['embeddings'], data['labels'], test_dataset.labels, tsne_path)
 
     print(f"  [{tag}] Done.")
@@ -283,14 +287,14 @@ def write_report(all_results, save_path):
     # File listing
     lines.append('## Output Files')
     lines.append('')
-    lines.append('Each experiment folder in `experiments/trained_models/` contains:')
+    lines.append('Each model folder in `experiments/evaluation/{model_name}/` contains:')
     lines.append('- `eval_results.json` — full metrics')
     lines.append('- `predictions.csv` — per-sample predictions (for custom charts)')
     lines.append('- `tsne.png` — t-SNE embedding visualization')
     lines.append('')
-    lines.append('Combined outputs:')
-    lines.append('- `experiments/eval_summary.csv` — one row per model (for graphing)')
-    lines.append('- `experiments/eval_report.md` — this report')
+    lines.append('Combined outputs in `experiments/evaluation/`:')
+    lines.append('- `eval_summary.csv` — one row per model (for graphing)')
+    lines.append('- `eval_report.md` — this report')
 
     with open(save_path, 'w') as f:
         f.write('\n'.join(lines))
@@ -333,6 +337,19 @@ if [ $EXIT_CODE -eq 0 ]; then
 else
     echo ""
     echo "Evaluations finished with errors (exit code $EXIT_CODE)."
+fi
+
+# Copy results to Google Drive
+echo ""
+echo "Syncing evaluation results to Google Drive..."
+echo 'alias rclone="rclone --config /workspace/rclone.conf"' >> ~/.bashrc
+source ~/.bashrc
+rclone --config /workspace/rclone.conf copy experiments/evaluation/ gdrive:adv-com-vis-final/evaluation --progress
+RCLONE_EXIT=$?
+if [ $RCLONE_EXIT -eq 0 ]; then
+    echo "Drive sync complete."
+else
+    echo "Drive sync failed (exit code $RCLONE_EXIT). Files are still in experiments/ locally."
 fi
 
 echo ""
@@ -449,14 +466,14 @@ def main():
             sys.exit(130)
         sys.exit(1)
 
-    # Write combined outputs
-    os.makedirs('experiments', exist_ok=True)
+    # Write combined outputs to experiments/evaluation/
+    os.makedirs(EVAL_DIR, exist_ok=True)
 
-    summary_csv_path = os.path.join('experiments', 'eval_summary.csv')
+    summary_csv_path = os.path.join(EVAL_DIR, 'eval_summary.csv')
     write_summary_csv(all_results, summary_csv_path)
     print(f"\nSummary CSV: {summary_csv_path}")
 
-    report_path = os.path.join('experiments', 'eval_report.md')
+    report_path = os.path.join(EVAL_DIR, 'eval_report.md')
     write_report(all_results, report_path)
     print(f"Report:      {report_path}")
 
@@ -471,6 +488,18 @@ def main():
 
     best = max(all_results, key=lambda r: r['test_top1'])
     print(f"\nBest: {best['description']} (top-1: {best['test_top1']:.4f})")
+
+    # Sync results to Google Drive
+    print(f"\nSyncing evaluation results to Google Drive...")
+    rclone_result = subprocess.run(
+        ['rclone', '--config', '/workspace/rclone.conf', 'copy',
+         'experiments/evaluation/', 'gdrive:adv-com-vis-final/evaluation', '--progress'],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+    )
+    if rclone_result.returncode == 0:
+        print("Drive sync complete.")
+    else:
+        print(f"Drive sync failed (exit code {rclone_result.returncode}). Files are still in experiments/evaluation/ locally.")
 
     if user_killed:
         sys.exit(130)
