@@ -240,13 +240,12 @@ def main(args):
     if args.pretrained_path:
         print(f"Pre-trained: {args.pretrained_path}")
 
-    # Datasets — CE-only uses single augmented view, SupCon uses two views
+    # Datasets — only train and val; test is reserved for eval.py
     train_dataset = ASLKeypointDataset(train_dir, augment=True, target_per_class=args.target_per_class)
     val_dataset = ASLKeypointDataset(val_dir, augment=False)
-    test_dataset = ASLKeypointDataset(test_dir, augment=False)
 
     num_classes = len(train_dataset.labels)
-    print(f"Classes: {num_classes}, Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+    print(f"Classes: {num_classes}, Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
     if use_supcon:
         train_collate = collate_augmented
@@ -258,8 +257,6 @@ def main(args):
                               collate_fn=train_collate, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
                             collate_fn=collate_eval, num_workers=args.num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
-                             collate_fn=collate_eval, num_workers=args.num_workers)
 
     # Model
     model = SignLanguageEncoder(num_classes=num_classes, use_rope=args.use_rope,
@@ -318,12 +315,8 @@ def main(args):
             }, os.path.join(args.save_dir, 'best_model.pt'))
             print(f"  -> Saved new best model (val top1: {best_val_top1:.4f})")
 
-    # Test with best model
-    checkpoint = torch.load(os.path.join(args.save_dir, 'best_model.pt'), weights_only=True)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    test_metrics = evaluate(model, test_loader, device)
-    print(f"\nTest Results (best model from epoch {checkpoint['epoch']}): "
-          f"top1 {test_metrics['top1']:.4f}, top5 {test_metrics['top5']:.4f}")
+    print(f"\nTraining complete. Best val top1: {best_val_top1:.4f}")
+    print(f"Run eval.py to evaluate on the test set.")
 
 
 if __name__ == '__main__':
