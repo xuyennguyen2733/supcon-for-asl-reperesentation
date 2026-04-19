@@ -509,7 +509,7 @@ def main():
         print(f"\nSyncing evaluation results to Google Drive...")
         rclone_result = subprocess.run(
             ['rclone', '--config', '/workspace/rclone.conf', 'copy',
-             'experiments/evaluation/', 'gdrive:adv-com-vis-final/evaluation', '--progress'],
+             'experiments/evaluation/', 'gdrive:adv-com-vis-final/experiments/evaluation', '--progress'],
             cwd=os.path.dirname(os.path.abspath(__file__)),
         )
         if rclone_result.returncode == 0:
