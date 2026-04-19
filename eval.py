@@ -177,7 +177,7 @@ def main(args):
                                 use_triplet=args.use_triplet).to(device)
 
     # Load checkpoint
-    checkpoint = torch.load(args.checkpoint, weights_only=True)
+    checkpoint = torch.load(args.checkpoint, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     print(f"Loaded checkpoint: {args.checkpoint} "
           f"(epoch {checkpoint['epoch']}, val top1 {checkpoint['val_top1']:.4f})")

@@ -147,7 +147,7 @@ def evaluate_model(checkpoint_path, test_dataset, test_loader, device):
         use_rope=config['use_rope'],
     ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, weights_only=True)
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
 
     # Collect predictions and embeddings

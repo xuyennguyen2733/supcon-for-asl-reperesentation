@@ -258,7 +258,7 @@ def load_models(checkpoint_paths, device):
             use_rope=config['use_rope'],
         ).to(device)
 
-        checkpoint = torch.load(cp, weights_only=True)
+        checkpoint = torch.load(cp, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 

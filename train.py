@@ -264,7 +264,7 @@ def main(args):
 
     # Load pre-trained encoder weights if provided
     if args.pretrained_path:
-        checkpoint = torch.load(args.pretrained_path, weights_only=True)
+        checkpoint = torch.load(args.pretrained_path, weights_only=False)
         model.load_state_dict(checkpoint['encoder_state_dict'], strict=False)
         print(f"Loaded pre-trained encoder from {args.pretrained_path} "
               f"(epoch {checkpoint['epoch']}, loss {checkpoint['loss']:.6f})")
