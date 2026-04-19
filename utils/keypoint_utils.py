@@ -71,14 +71,21 @@ def reconstruct_video_from_keypoints(keypoints, save_dir: str, filename: str, fp
   out.release()
 
 def draw_landmarks_from_coordinates(image, keypoints, connections, dot_color=(0, 255, 0), line_color=(255, 255, 255), dot_radius=4, line_thickness=2):
-    # Draw connections first so dots appear on top
+    # Identify which keypoints are valid (non-zero)
+    valid = [not (kp[0] == 0 and kp[1] == 0) for kp in keypoints]
+
+    # Draw connections first so dots appear on top (skip if either end is dropped)
     for start_idx, end_idx in connections:
+        if not valid[start_idx] or not valid[end_idx]:
+            continue
         start = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
         end = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
         cv2.line(image, start, end, line_color, line_thickness)
 
-    # Draw dots
-    for kp in keypoints:
+    # Draw dots (skip dropped joints)
+    for i, kp in enumerate(keypoints):
+        if not valid[i]:
+            continue
         pos = (int(kp[0]), int(kp[1]))
         cv2.circle(image, pos, dot_radius, dot_color, -1)
 

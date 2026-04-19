@@ -47,10 +47,17 @@ Processes custom video samples from `data/samples/videos/{label}/*.mp4`, extract
 ### Visualize augmentations
 
 ```bash
-python -m tools.visualize_augmentations
+# By sample path
+python -m tools.visualize_augmentations --sample data/keypoints/train/hello/12345
+
+# By label (picks first sample)
+python -m tools.visualize_augmentations --label book
 ```
 
-Loads saved keypoints from `data/keypoints/train/`, applies random augmentations (horizontal flip, speed change, joint noise, spatial scale, temporal crop, joint dropout, rotation) to create two views per sample, and renders them to `data/augmented_renders/` for visual inspection.
+Produces 3 videos in `data/augmented_visualization/{label}/{sample_id}/`:
+- `original.mp4` -- unmodified skeleton
+- `view_1.mp4` -- augmented view with overlay listing applied augmentations and parameters
+- `view_2.mp4` -- independently augmented view with its own overlay
 
 ## Training
 
@@ -94,8 +101,16 @@ python train.py [OPTIONS]
 | `--use_triplet` / `--no-use_triplet` | on | Pose-Triplet vs flat tokenization |
 | `--use_rope` | off | Use RoPE instead of absolute positional encoding |
 | `--pretrained_path` | None | Path to pre-trained encoder checkpoint |
+| `--resume` | off | Resume training from `last_checkpoint.pt` in save_dir |
+| `--patience` | 20 | Early stopping: stop after N epochs without val improvement (0 to disable) |
 | `--seed` | 42 | Random seed for reproducibility |
 | `--save_dir` | checkpoints | Directory for saving model checkpoints |
+
+**Resumable training:** A `last_checkpoint.pt` is saved every epoch with full training state (model, optimizer, scheduler, epoch, early stopping counter). Use `--resume` to pick up where training left off after interruptions or crashes.
+
+**Early stopping:** Training stops if val top-1 accuracy doesn't improve for `--patience` consecutive epochs (default 20). Saves GPU time when the model has plateaued.
+
+**Label consistency:** The training label-to-index mapping is saved as `label_to_idx.json` alongside the model. This ensures val/test evaluation uses the same class indices, even if the val/test sets have fewer classes than training.
 
 ## Experiments
 
@@ -163,7 +178,7 @@ python train.py --use_rope \
 
 ### Running All Experiments with run.py
 
-`run.py` orchestrates all 7 experiments automatically. It detects available GPUs and parallelizes across them. With 1 GPU, experiments run sequentially in priority order (core 2x2 first, then enhancements). Progress is printed to the console (every 10th epoch, new best models).
+`run.py` orchestrates all 7 experiments automatically. It detects available GPUs and parallelizes across them. Progress is printed to the console (every 10th epoch, new best models). All training jobs include `--resume` so re-running after interruption picks up where each experiment left off.
 
 ```bash
 # Run all 7 experiments
@@ -180,9 +195,12 @@ python run.py --only 1 2 3 4    # just the core 2x2 grid
 python run.py --epochs 50                    # shorter training
 python run.py --epochs 100 --pretrain_epochs 80  # more pre-training
 
+# Run multiple experiments per GPU (when GPU utilization is low)
+python run.py --jobs_per_gpu 2
+
 # Run in tmux (survives SSH disconnects, auto-stops RunPod when done)
 python run.py --tmux training
-python run.py --tmux training --only 1 4 5
+python run.py --tmux training --jobs_per_gpu 2
 ```
 
 | Flag | Default | Description |
@@ -191,36 +209,43 @@ python run.py --tmux training --only 1 4 5
 | `--pretrain_epochs` | 50 | Pre-training epochs (experiments 6, 7) |
 | `--dry_run` | off | Print commands without executing |
 | `--only` | all | Run specific experiments by number (e.g. `--only 1 4 5`) |
+| `--jobs_per_gpu` | 1 | Concurrent experiments per GPU |
 | `--tmux` | off | Run inside a named tmux session |
 
-**Multi-GPU behavior:** With N GPUs detected, up to N experiments run concurrently, each pinned to a separate GPU via `CUDA_VISIBLE_DEVICES`. Pre-training steps (experiments 6, 7) run automatically before their training step within the same job.
+**Multi-GPU behavior:** With N GPUs and `--jobs_per_gpu M`, up to N*M experiments run concurrently. Each experiment is pinned to a GPU via `CUDA_VISIBLE_DEVICES`.
 
-**tmux + RunPod behavior:** When `--tmux` is set, the script launches in a detached tmux session that survives SSH disconnects. When all experiments finish (or crash), it prompts to stop the RunPod pod. If no response within 2 minutes, the pod auto-stops to prevent charges. User-initiated interrupts (Ctrl+C, `tmux kill-session`) do not stop the pod.
+**tmux + RunPod behavior:** When `--tmux` is set, the script launches in a detached tmux session that survives SSH disconnects. After training completes:
+- **Success:** syncs `experiments/trained_models/` to Google Drive via rclone, then prompts to stop the pod
+- **Crash:** skips sync (output may be corrupted), prompts to stop the pod
+- **User interrupt (Ctrl+C):** does nothing, pod keeps running
+
+If no response to the stop prompt within 2 minutes, the pod auto-stops to prevent charges.
 
 **Output structure:**
 
 ```
 experiments/trained_models/
 ├── 1_flat_ce/
-│   ├── best_model.pt       # best checkpoint by val top-1 accuracy
-│   └── train.log           # full training output
-├── 2_flat_supcon_ce/
-│   ├── best_model.pt
-│   └── train.log
+│   ├── best_model.pt           # best checkpoint by val top-1 accuracy
+│   ├── last_checkpoint.pt      # resumable training state (every epoch)
+│   ├── label_to_idx.json       # class index mapping (for eval)
+│   └── train.log               # full training output
 ├── ...
 ├── 6_triplet_pt_supcon_ce/
 │   ├── pretrained_encoder.pt   # pre-trained weights
 │   ├── best_model.pt
+│   ├── last_checkpoint.pt
+│   ├── label_to_idx.json
 │   └── train.log
 └── 7_triplet_rope_pt_supcon_ce/
-    ├── pretrained_encoder.pt
-    ├── best_model.pt
-    └── train.log
+    └── ...
 ```
 
 ## Evaluation
 
 ### Evaluating a Single Model
+
+`eval.py` loads the label mapping from `label_to_idx.json` (saved during training) to ensure consistent class indices. Falls back to the training directory if the file is missing.
 
 ```bash
 python eval.py --checkpoint experiments/trained_models/4_triplet_supcon_ce/best_model.pt
@@ -251,7 +276,7 @@ python eval.py --checkpoint experiments/trained_models/5_triplet_rope_supcon_ce/
 
 ### Evaluating All Models with run_eval.py
 
-`run_eval.py` evaluates all trained models and produces comparison reports. Architecture flags are automatically inferred from folder names.
+`run_eval.py` evaluates all trained models and produces comparison reports. Architecture flags and label mappings are automatically inferred from each experiment folder.
 
 ```bash
 # Evaluate all models in experiments/trained_models/
@@ -274,7 +299,9 @@ python run_eval.py --tmux eval_session
 | `--dry_run` | off | List models without evaluating |
 | `--tmux` | off | Run in tmux session with pod auto-stop |
 
-**Per-model outputs** (in each experiment folder):
+After evaluation completes successfully, results are synced to Google Drive via rclone before prompting to stop the pod.
+
+**Per-model outputs** (in `experiments/evaluation/{model_name}/`):
 
 | File | Format | Contents |
 |---|---|---|
@@ -282,7 +309,7 @@ python run_eval.py --tmux eval_session
 | `predictions.csv` | CSV | Per-sample: true label, predicted label, correct, confidence, top-5 |
 | `tsne.png` | PNG | t-SNE embedding visualization |
 
-**Combined outputs** (in `experiments/`):
+**Combined outputs** (in `experiments/evaluation/`):
 
 | File | Format | Contents |
 |---|---|---|
@@ -319,25 +346,25 @@ python demo.py --smoke_test 3      # 3 fake models
 | `--camera` | 0 | Webcam index |
 | `--smoke_test` | off | Run with N fake models to test the UI (default: 7) |
 
-If no checkpoint is provided, or a checkpoint path doesn't exist, the demo still runs with skeleton overlay and the recording state machine -- a message is shown on screen. Architecture flags (`use_triplet`, `use_rope`) are auto-detected from folder names when using `--checkpoints`.
+If no checkpoint is provided, or a checkpoint path doesn't exist, the demo still runs with skeleton overlay and the recording state machine. Architecture flags and label mappings are auto-detected from `label_to_idx.json` in each model's folder.
 
 **How it works:**
 
 The demo uses a state machine for frame accumulation:
 
 - **IDLE** -- no hands visible, waiting. Shows "Show your hands to start".
-- **RECORDING** -- hands detected, accumulating frames. Shows frame count + pulsing red dot + progress bar. Tolerates up to 5 consecutive frames without hands (MediaPipe detection dropout). Stops at 60 frames or when hands disappear for >5 frames.
-- **SHOWING** -- all model predictions displayed for 3 seconds with confidence and inference time (e.g. `book 89% (3ms)`), then resets. If hands are still visible, immediately starts recording again.
+- **RECORDING** -- hands detected, accumulating frames. Shows frame count + pulsing red dot. Tolerates up to 5 consecutive frames without hands (MediaPipe detection dropout). Stops at 60 frames or when hands disappear for >5 frames.
+- **SHOWING** -- predictions displayed in the lower-right panel with confidence and inference time. Predictions persist on screen until replaced by new ones or cleared with `C`. Frames continue accumulating during this state for seamless back-to-back recognition.
 
-Sequences shorter than 30 frames (~1 second) are discarded as too short to classify. Close with `Q`, the window X button, or `C` to clear the buffer.
+Sequences shorter than 30 frames (~1 second) are discarded. Each prediction set is also logged to the console with timestamps for review after closing. Close with `Q`, the window X button, or `C` to clear predictions and buffer.
 
 ## Project Structure
 
 ```
 supcon-for-asl-reperesentation/
-├── train.py                    # Training loop (train + val only, no test data)
+├── train.py                    # Training loop (train + val, resumable, early stopping)
 ├── eval.py                     # Single-model evaluation on test set
-├── demo.py                     # Real-time webcam demo
+├── demo.py                     # Real-time webcam demo (multi-model comparison)
 ├── run.py                      # Orchestrate all training experiments
 ├── run_eval.py                 # Orchestrate all evaluations + comparison reports
 ├── requirements.txt
@@ -347,17 +374,16 @@ supcon-for-asl-reperesentation/
 │   ├── losses.py               # SupConLoss, TotalLoss
 │   └── pretrain.py             # BERT-style masked pose pre-training
 ├── utils/
-│   ├── augmentation_utils.py   # 7 augmentations (flip, speed, noise, scale, crop, dropout, rotate)
+│   ├── augmentation_utils.py   # 7 augmentations with optional tracking
 │   ├── data_utils.py           # Temporal resampling utilities
 │   └── keypoint_utils.py       # MediaPipe extraction, normalization, visualization
 ├── tools/
 │   ├── wlasl100_to_keypoints.py
 │   ├── sample_video_to_keypoints.py
-│   └── visualize_augmentations.py
+│   └── visualize_augmentations.py  # Augmentation visualization with overlay text
 ├── data/                       # Dataset files (not committed)
 └── experiments/                # Experiment outputs (not committed)
-    ├── trained_models/         # One folder per experiment
-    ├── eval_summary.csv        # Cross-model comparison
-    ├── eval_report.md          # Human-readable report
+    ├── trained_models/         # One folder per experiment (models, logs, mappings)
+    ├── evaluation/             # Eval outputs (per-model + combined reports)
     └── class_distribution.csv  # Per-class sample counts
 ```
