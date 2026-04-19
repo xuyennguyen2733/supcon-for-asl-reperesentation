@@ -461,25 +461,29 @@ def main():
     signal.signal(signal.SIGTERM, handle_signal)
 
     all_results = []
-    crashed = False
+    failed = []
     try:
         for cp in checkpoints:
-            results = evaluate_model(cp, test_loader, device, train_label_names)
-            all_results.append(results)
+            try:
+                results = evaluate_model(cp, test_loader, device, train_label_names)
+                all_results.append(results)
+            except Exception as e:
+                name = os.path.basename(os.path.dirname(cp))
+                failed.append(name)
+                print(f"  [{name}] FAILED: {e}")
     except KeyboardInterrupt:
         user_killed = True
         print("\n\nUser interrupted — saving partial results.")
-    except Exception as e:
-        crashed = True
-        print(f"\n\nEvaluation crashed: {e}")
+
+    if failed:
+        print(f"\n{len(failed)} model(s) failed: {', '.join(failed)}")
 
     if not all_results:
-        print("No models were evaluated.")
+        print("No models were evaluated successfully.")
         if user_killed:
             sys.exit(130)
-        if crashed:
-            if prompt_stop_pod():
-                stop_runpod()
+        if prompt_stop_pod():
+            stop_runpod()
         sys.exit(1)
 
     # Write combined outputs to experiments/evaluation/
