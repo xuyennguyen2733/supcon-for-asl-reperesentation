@@ -260,15 +260,29 @@ def load_models(checkpoint_paths, device):
             label_names = sorted(os.listdir(train_dir))
 
         checkpoint = torch.load(cp, weights_only=False)
-        trained_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]
+        state = checkpoint['model_state_dict']
+        trained_classes = state['classification_head.bias'].shape[0]
+
+        layer_indices = set()
+        for key in state:
+            if key.startswith('transformer.'):
+                for p in key.split('.')[1:]:
+                    if p.isdigit():
+                        layer_indices.add(int(p))
+                        break
+        num_layers = max(layer_indices) + 1 if layer_indices else 2
+        ffn_key = [k for k in state if 'ffn.0.weight' in k or 'linear1.weight' in k]
+        dim_feedforward = state[ffn_key[0]].shape[0] if ffn_key else 384
 
         model = SignLanguageEncoder(
             num_classes=trained_classes,
             use_triplet=config['use_triplet'],
             use_rope=config['use_rope'],
+            num_layers=num_layers,
+            dim_feedforward=dim_feedforward,
         ).to(device)
 
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(state)
         model.eval()
 
         models.append((name, model, label_names))

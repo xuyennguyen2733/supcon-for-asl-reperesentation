@@ -109,8 +109,8 @@ class RoPETransformerEncoderLayer(nn.Module):
 
 class SignLanguageEncoder(nn.Module):
     def __init__(self, num_classes, body_dim=69, left_hand_dim=63, right_hand_dim=63,
-                 emb_dim=64, nhead=8, num_layers=2, proj_dim=128, max_T=512,
-                 dropout=0.2, use_rope=False, use_triplet=True):
+                 emb_dim=64, nhead=8, num_layers=2, dim_feedforward=None, proj_dim=128,
+                 max_T=512, dropout=0.2, use_rope=False, use_triplet=True):
         super().__init__()
         self.use_rope = use_rope
         self.use_triplet = use_triplet
@@ -119,6 +119,8 @@ class SignLanguageEncoder(nn.Module):
         # transformer, heads, and checkpoints are comparable.
         d_model = emb_dim * 3  # 192
         self.d_model = d_model
+        if dim_feedforward is None:
+            dim_feedforward = d_model * 2  # default 384
 
         if use_triplet:
             # Pose-Triplet: independent projections per body part
@@ -135,17 +137,15 @@ class SignLanguageEncoder(nn.Module):
         nn.init.normal_(self.cls_token, std=0.02)
 
         if use_rope:
-            # RoPE: positions encoded via rotations inside attention — no pos_encoding needed
-            layers = [RoPETransformerEncoderLayer(d_model, nhead, d_model * 2, dropout, max_T)
+            layers = [RoPETransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, max_T)
                       for _ in range(num_layers)]
             self.transformer = nn.ModuleList(layers)
         else:
-            # Absolute learned positional encoding
             self.pos_encoding = nn.Parameter(torch.zeros(1, 1 + max_T, d_model))
             nn.init.normal_(self.pos_encoding, std=0.02)
 
             encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, dim_feedforward=d_model * 2,
+                d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
                 dropout=dropout, batch_first=True
             )
             self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)

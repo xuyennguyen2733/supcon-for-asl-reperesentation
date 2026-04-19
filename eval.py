@@ -184,12 +184,26 @@ def main(args):
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
                              collate_fn=collate_eval, num_workers=0)
 
-    # Load checkpoint first to get num_classes from saved weights
+    # Load checkpoint and infer architecture from saved weights
     checkpoint = torch.load(args.checkpoint, weights_only=False)
-    trained_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]
+    state = checkpoint['model_state_dict']
+    trained_classes = state['classification_head.bias'].shape[0]
+
+    layer_indices = set()
+    for key in state:
+        if key.startswith('transformer.'):
+            for p in key.split('.')[1:]:
+                if p.isdigit():
+                    layer_indices.add(int(p))
+                    break
+    num_layers = max(layer_indices) + 1 if layer_indices else 2
+
+    ffn_key = [k for k in state if 'ffn.0.weight' in k or 'linear1.weight' in k]
+    dim_feedforward = state[ffn_key[0]].shape[0] if ffn_key else 384
 
     model = SignLanguageEncoder(num_classes=trained_classes, use_rope=args.use_rope,
-                                use_triplet=args.use_triplet).to(device)
+                                use_triplet=args.use_triplet, num_layers=num_layers,
+                                dim_feedforward=dim_feedforward).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     print(f"Loaded checkpoint: {args.checkpoint} "
           f"(epoch {checkpoint['epoch']}, val top1 {checkpoint['val_top1']:.4f}, "

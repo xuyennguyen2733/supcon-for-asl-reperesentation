@@ -139,18 +139,34 @@ def evaluate_model(checkpoint_path, test_loader, device, train_label_names):
 
     print(f"  [{tag}] Evaluating {description}...")
 
-    # Load checkpoint first to get num_classes from the saved weights
+    # Load checkpoint and infer architecture from saved weights
     checkpoint = torch.load(checkpoint_path, weights_only=False)
-    num_classes = checkpoint['model_state_dict']['classification_head.bias'].shape[0]
+    state = checkpoint['model_state_dict']
+    num_classes = state['classification_head.bias'].shape[0]
 
-    # Build model with the same num_classes it was trained with
+    # Infer num_layers from highest transformer layer index
+    layer_indices = set()
+    for key in state:
+        if key.startswith('transformer.'):
+            for p in key.split('.')[1:]:
+                if p.isdigit():
+                    layer_indices.add(int(p))
+                    break
+    num_layers = max(layer_indices) + 1 if layer_indices else 2
+
+    # Infer FFN dim from weight shape (works for both RoPE and standard)
+    ffn_key = [k for k in state if 'ffn.0.weight' in k or 'linear1.weight' in k]
+    dim_feedforward = state[ffn_key[0]].shape[0] if ffn_key else 384
+
     model = SignLanguageEncoder(
         num_classes=num_classes,
         use_triplet=config['use_triplet'],
         use_rope=config['use_rope'],
+        num_layers=num_layers,
+        dim_feedforward=dim_feedforward,
     ).to(device)
 
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(state)
 
     # Collect predictions and embeddings
     data = collect_predictions_and_embeddings(model, test_loader, device)
