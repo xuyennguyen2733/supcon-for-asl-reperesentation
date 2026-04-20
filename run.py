@@ -143,6 +143,23 @@ def get_experiments(epochs, pretrain_epochs):
                 '--save_dir', os.path.join(BASE_DIR, '8_triplet_supcon_then_ce'),
             ],
         },
+        {
+            'name': '9_flat_supcon_then_ce',
+            'description': 'Two-stage SupCon on flat tokens: stage 1 SupCon-only pretrain, stage 2 frozen encoder + linear CE',
+            'pretrain_cmd': [
+                sys.executable, '-u', 'train.py', '--resume',
+                '--no-use_triplet', '--supcon_only',
+                '--epochs', str(epochs),
+                '--save_dir', os.path.join(BASE_DIR, '9_flat_supcon_then_ce'),
+            ],
+            'train_cmd': [
+                sys.executable, '-u', 'train.py', '--resume',
+                '--no-use_triplet', '--ce_only', '--freeze_encoder',
+                '--pretrained_path', os.path.join(BASE_DIR, '9_flat_supcon_then_ce', 'pretrained_encoder.pt'),
+                '--epochs', str(epochs),
+                '--save_dir', os.path.join(BASE_DIR, '9_flat_supcon_then_ce'),
+            ],
+        },
     ]
     return experiments
 
@@ -395,7 +412,7 @@ def main():
         selected = set(args.only)
         experiments = [e for i, e in enumerate(experiments, 1) if i in selected]
         if not experiments:
-            print(f"No experiments matched --only {args.only}. Valid range: 1-8.")
+            print(f"No experiments matched --only {args.only}. Valid range: 1-9.")
             return
 
     # Detect GPUs

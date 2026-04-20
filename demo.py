@@ -51,6 +51,7 @@ EXPERIMENT_CONFIG = {
     '6_triplet_pt_supcon_ce':     {'use_triplet': True,  'use_rope': False},
     '7_triplet_rope_pt_supcon_ce':{'use_triplet': True,  'use_rope': True},
     '8_triplet_supcon_then_ce':   {'use_triplet': True,  'use_rope': False},
+    '9_flat_supcon_then_ce':      {'use_triplet': False, 'use_rope': False},
 }
 
 
