@@ -35,7 +35,7 @@ STATE_RECORDING = 'RECORDING'
 STATE_SHOWING = 'SHOWING'
 
 # Thresholds
-MIN_FRAMES = 15          # first prediction at this many frames
+MIN_FRAMES = 5           # first prediction at this many frames
 PREDICT_INTERVAL = 5     # re-predict every N additional frames
 MAX_FRAMES = 35          # final prediction and stop recording
 HANDS_GONE_TOLERANCE = 5 # consecutive no-hand frames before stopping
