@@ -424,19 +424,34 @@ def main(args):
                     should_stop = True
 
                 if should_stop:
-                    if len(poses_buffer) >= MIN_FRAMES and models:
-                        tokens = keypoints_to_tokens(
-                            poses_buffer, left_hands_buffer, right_hands_buffer
-                        ).to(device)
-                        current_predictions = run_all_models(models, tokens, device)
-                        state = STATE_SHOWING
-                        show_start_time = time.time()
+                    if len(poses_buffer) >= MIN_FRAMES:
+                        # Save keypoints as reconstructed video if requested
+                        if args.save_keypoints:
+                            from utils.keypoint_utils import reconstruct_video_from_keypoints
+                            save_dir = os.path.join('data', 'demo_keypoints')
+                            os.makedirs(save_dir, exist_ok=True)
+                            ts_file = time.strftime('%Y%m%d_%H%M%S')
+                            filename = f'capture_{ts_file}_{len(poses_buffer)}frames.mp4'
+                            kp = [np.array(poses_buffer), np.array(left_hands_buffer),
+                                  np.array(right_hands_buffer)]
+                            reconstruct_video_from_keypoints(kp, save_dir, filename)
+                            print(f"  Saved keypoints: {save_dir}/{filename}")
 
-                        # Log to console
-                        ts = time.strftime('%H:%M:%S')
-                        print(f"\n[{ts}] Predictions ({len(poses_buffer)} frames):")
-                        for name, label, conf, ms in current_predictions:
-                            print(f"  {name:25s} {label:15s} {conf:.0%} ({ms:.0f}ms)")
+                        if models:
+                            tokens = keypoints_to_tokens(
+                                poses_buffer, left_hands_buffer, right_hands_buffer
+                            ).to(device)
+                            current_predictions = run_all_models(models, tokens, device)
+                            state = STATE_SHOWING
+                            show_start_time = time.time()
+
+                            # Log to console
+                            ts = time.strftime('%H:%M:%S')
+                            print(f"\n[{ts}] Predictions ({len(poses_buffer)} frames):")
+                            for name, label, conf, ms in current_predictions:
+                                print(f"  {name:25s} {label:15s} {conf:.0%} ({ms:.0f}ms)")
+                        else:
+                            state = STATE_IDLE
                     else:
                         state = STATE_IDLE
 
@@ -494,5 +509,7 @@ if __name__ == '__main__':
     parser.add_argument('--camera', type=int, default=0, help='Camera index')
     parser.add_argument('--smoke_test', type=int, nargs='?', const=7, default=None,
                         help='Run with fake models to test UI (default: 7 models)')
+    parser.add_argument('--save_keypoints', action='store_true',
+                        help='Save captured keypoints as reconstructed videos to data/demo_keypoints/')
     args = parser.parse_args()
     main(args)
