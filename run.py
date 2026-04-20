@@ -131,7 +131,8 @@ def get_experiments(epochs, pretrain_epochs):
             'pretrain_cmd': [
                 sys.executable, '-u', 'train.py', '--resume',
                 '--supcon_only',
-                '--epochs', str(pretrain_epochs),
+                # Match experiment 4's SupCon budget (100 epochs of contrastive gradients)
+                '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '8_triplet_supcon_then_ce'),
             ],
             'train_cmd': [

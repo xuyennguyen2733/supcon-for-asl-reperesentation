@@ -51,6 +51,7 @@ EXPERIMENT_CONFIG = {
     '5_triplet_rope_supcon_ce':   {'use_triplet': True,  'use_rope': True},
     '6_triplet_pt_supcon_ce':     {'use_triplet': True,  'use_rope': False},
     '7_triplet_rope_pt_supcon_ce':{'use_triplet': True,  'use_rope': True},
+    '8_triplet_supcon_then_ce':   {'use_triplet': True,  'use_rope': False},
 }
 
 EXPERIMENT_DESCRIPTIONS = {
@@ -61,6 +62,7 @@ EXPERIMENT_DESCRIPTIONS = {
     '5_triplet_rope_supcon_ce':    'Triplet + RoPE + SupCon + CE',
     '6_triplet_pt_supcon_ce':      'Triplet + Pre-trained + SupCon + CE',
     '7_triplet_rope_pt_supcon_ce': 'Triplet + RoPE + Pre-trained + SupCon + CE',
+    '8_triplet_supcon_then_ce':    'Triplet + Two-stage SupCon->CE (Khosla)',
 }
 
 
