@@ -415,9 +415,11 @@ def main():
     parser.add_argument('--dry_run', action='store_true', help='List models without evaluating')
     parser.add_argument('--tmux', type=str, default=None, metavar='SESSION',
                         help='Run in tmux session (survives disconnects, auto-stops RunPod when done)')
+    parser.add_argument('--run-locally', dest='run_locally', action='store_true',
+                        help='Running on a local machine: skip tmux, rclone sync, and pod stop logic')
     args = parser.parse_args()
 
-    if args.tmux:
+    if args.tmux and not args.run_locally:
         launch_in_tmux(args.tmux, sys.argv)
         return
 
@@ -498,7 +500,7 @@ def main():
         print("No models were evaluated successfully.")
         if user_killed:
             sys.exit(130)
-        if prompt_stop_pod():
+        if not args.run_locally and prompt_stop_pod():
             stop_runpod()
         sys.exit(1)
 
@@ -527,8 +529,13 @@ def main():
 
     # Post-run logic
     if user_killed:
-        print("\nUser interrupted — pod will keep running.")
+        if not args.run_locally:
+            print("\nUser interrupted — pod will keep running.")
         sys.exit(130)
+
+    # Skip Drive sync and pod stop entirely when running locally
+    if args.run_locally:
+        return
 
     all_evaluated = len(all_results) == len(checkpoints)
 

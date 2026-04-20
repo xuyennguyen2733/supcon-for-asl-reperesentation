@@ -378,10 +378,12 @@ def main():
                         help='Number of experiments to run concurrently per GPU (default: 1)')
     parser.add_argument('--tmux', type=str, default=None, metavar='SESSION',
                         help='Run inside a tmux session (survives disconnects, auto-stops RunPod when done)')
+    parser.add_argument('--run-locally', dest='run_locally', action='store_true',
+                        help='Running on a local machine: skip tmux, rclone sync, and pod stop logic')
     args = parser.parse_args()
 
-    # If --tmux is set, re-launch inside tmux and exit
-    if args.tmux:
+    # If --tmux is set (and not running locally), re-launch inside tmux and exit
+    if args.tmux and not args.run_locally:
         launch_in_tmux(args.tmux, sys.argv)
         return  # unreachable after execvp, but for clarity
 
@@ -464,8 +466,13 @@ def main():
     # Post-run logic depends on how we got here
     if user_killed:
         # User interrupted — do nothing, just exit
-        print("\nUser interrupted — pod will keep running.")
+        if not args.run_locally:
+            print("\nUser interrupted — pod will keep running.")
         sys.exit(130)
+
+    # Skip Drive sync and pod stop entirely when running locally
+    if args.run_locally:
+        return
 
     if all_success:
         # All experiments passed — sync to Drive
