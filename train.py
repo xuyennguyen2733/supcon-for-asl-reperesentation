@@ -8,7 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from utils.augmentation_utils import random_augment
 from models.encoder import SignLanguageEncoder
-from models.losses import TotalLoss
+from models.losses import TotalLoss, SupConLoss
 
 train_dir = os.path.join('data', 'keypoints', 'train')
 test_dir = os.path.join('data', 'keypoints', 'test')
@@ -173,6 +173,41 @@ def train_one_epoch_supcon(model, dataloader, criterion, optimizer, device):
     }
 
 
+def train_one_epoch_supcon_only(model, dataloader, criterion, optimizer, device):
+    """Stage 1 of two-stage SupCon: contrastive loss only, no CE."""
+    model.train()
+    loss_sum = 0.0
+    total = 0
+
+    for tokens1, mask1, tokens2, mask2, labels in dataloader:
+        tokens1, mask1 = tokens1.to(device), mask1.to(device)
+        tokens2, mask2 = tokens2.to(device), mask2.to(device)
+        labels = labels.to(device)
+
+        proj1, _ = model(tokens1, mask1)
+        proj2, _ = model(tokens2, mask2)
+
+        projections = torch.cat([proj1, proj2], dim=0)
+        repeated_labels = torch.cat([labels, labels], dim=0)
+        loss = criterion(projections, repeated_labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        loss_sum += loss.item() * labels.size(0)
+        total += labels.size(0)
+
+    n = total
+    return {
+        'loss': loss_sum / n,
+        'supcon_loss': loss_sum / n,
+        'ce_loss': 0.0,
+        'acc': 0.0,  # no classification in stage 1
+    }
+
+
 def train_one_epoch_ce(model, dataloader, criterion, optimizer, device):
     """Training step with CE only (single augmented view, no contrastive loss)."""
     model.train()
@@ -238,11 +273,18 @@ def main(args):
             torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_supcon = not args.ce_only
 
+    # Three modes: supcon_only (stage 1), ce_only (CE baseline or stage 2), else joint
+    if args.supcon_only and args.ce_only:
+        raise ValueError("Cannot set both --supcon_only and --ce_only")
+    mode = 'supcon_only' if args.supcon_only else ('ce_only' if args.ce_only else 'joint')
+
+    mode_labels = {'supcon_only': 'SupCon only (stage 1)', 'ce_only': 'CE only', 'joint': 'SupCon + CE'}
     print(f"Using device: {device}")
     print(f"Tokenization: {'Pose-Triplet' if args.use_triplet else 'Flat'}")
-    print(f"Loss: {'SupCon + CE' if use_supcon else 'CE only'}")
+    print(f"Loss: {mode_labels[mode]}")
+    if args.freeze_encoder:
+        print(f"Encoder frozen (stage 2 linear eval)")
     if args.use_rope:
         print(f"Positional encoding: RoPE")
     if args.pretrained_path:
@@ -256,11 +298,11 @@ def main(args):
     num_classes = len(train_dataset.label_to_idx)
     print(f"Classes: {num_classes}, Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
-    if use_supcon:
-        train_collate = collate_augmented
-    else:
-        # CE-only: dataset still returns (view1, view2, label) but we only use view1
+    # SupCon-based modes need two views; CE-only takes just one
+    if mode == 'ce_only':
         train_collate = lambda batch: collate_eval([(v1, l) for v1, _, l in batch])
+    else:
+        train_collate = collate_augmented
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                               collate_fn=train_collate, num_workers=args.num_workers)
@@ -278,14 +320,27 @@ def main(args):
         print(f"Loaded pre-trained encoder from {args.pretrained_path} "
               f"(epoch {checkpoint['epoch']}, loss {checkpoint['loss']:.6f})")
 
-    if use_supcon:
-        criterion = TotalLoss(temperature=args.temperature, ce_weight=args.ce_weight)
-        train_fn = train_one_epoch_supcon
-    else:
+    if mode == 'supcon_only':
+        criterion = SupConLoss(temperature=args.temperature)
+        train_fn = train_one_epoch_supcon_only
+    elif mode == 'ce_only':
         criterion = torch.nn.CrossEntropyLoss()
         train_fn = train_one_epoch_ce
+    else:
+        criterion = TotalLoss(temperature=args.temperature, ce_weight=args.ce_weight)
+        train_fn = train_one_epoch_supcon
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Freeze encoder for stage 2 linear eval — only classification head trains
+    if args.freeze_encoder:
+        for name, param in model.named_parameters():
+            if not name.startswith('classification_head'):
+                param.requires_grad = False
+        trainable = [p for p in model.parameters() if p.requires_grad]
+        print(f"Frozen encoder: {sum(p.numel() for p in trainable)} trainable parameters")
+    else:
+        trainable = model.parameters()
+
+    optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
 
     # Linear warmup then cosine decay
     warmup_epochs = args.warmup_epochs
@@ -320,32 +375,48 @@ def main(args):
         epochs_without_improvement = resume.get('epochs_without_improvement', 0)
         print(f"Resumed from epoch {resume['epoch']} (best val top1: {best_val_top1:.4f})")
 
+    best_train_loss = float('inf')
+
     for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = train_fn(model, train_loader, criterion, optimizer, device)
-        val_metrics = evaluate(model, val_loader, device)
         scheduler.step()
-
         lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch:3d}/{args.epochs} | "
-              f"lr {lr:.6f} | "
-              f"train loss {train_metrics['loss']:.4f} "
-              f"(supcon {train_metrics['supcon_loss']:.4f}, ce {train_metrics['ce_loss']:.4f}) | "
-              f"train acc {train_metrics['acc']:.4f} | "
-              f"val top1 {val_metrics['top1']:.4f}, top5 {val_metrics['top5']:.4f}")
 
-        # Save best model
-        if val_metrics['top1'] > best_val_top1:
-            best_val_top1 = val_metrics['top1']
-            epochs_without_improvement = 0
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_top1': best_val_top1,
-            }, os.path.join(args.save_dir, 'best_model.pt'))
-            print(f"  -> Saved new best model (val top1: {best_val_top1:.4f})")
+        # Stage 1 (supcon_only) has no meaningful classifier — skip val, save by loss
+        if mode == 'supcon_only':
+            print(f"Epoch {epoch:3d}/{args.epochs} | lr {lr:.6f} | "
+                  f"train supcon loss {train_metrics['loss']:.4f}")
+            if train_metrics['loss'] < best_train_loss:
+                best_train_loss = train_metrics['loss']
+                epochs_without_improvement = 0
+                torch.save({
+                    'epoch': epoch,
+                    'encoder_state_dict': model.state_dict(),
+                    'loss': best_train_loss,
+                }, os.path.join(args.save_dir, 'pretrained_encoder.pt'))
+                print(f"  -> Saved pretrained encoder (train loss: {best_train_loss:.4f})")
+            else:
+                epochs_without_improvement += 1
         else:
-            epochs_without_improvement += 1
+            val_metrics = evaluate(model, val_loader, device)
+            print(f"Epoch {epoch:3d}/{args.epochs} | lr {lr:.6f} | "
+                  f"train loss {train_metrics['loss']:.4f} "
+                  f"(supcon {train_metrics['supcon_loss']:.4f}, ce {train_metrics['ce_loss']:.4f}) | "
+                  f"train acc {train_metrics['acc']:.4f} | "
+                  f"val top1 {val_metrics['top1']:.4f}, top5 {val_metrics['top5']:.4f}")
+
+            if val_metrics['top1'] > best_val_top1:
+                best_val_top1 = val_metrics['top1']
+                epochs_without_improvement = 0
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_top1': best_val_top1,
+                }, os.path.join(args.save_dir, 'best_model.pt'))
+                print(f"  -> Saved new best model (val top1: {best_val_top1:.4f})")
+            else:
+                epochs_without_improvement += 1
 
         # Save resumable checkpoint every epoch (overwrites previous)
         torch.save({
@@ -378,6 +449,10 @@ if __name__ == '__main__':
     parser.add_argument('--target_per_class', type=int, default=50,
                         help='Oversample each class to this many samples per epoch (0 to disable)')
     parser.add_argument('--ce_only', action='store_true', help='CE-only baseline (no contrastive loss)')
+    parser.add_argument('--supcon_only', action='store_true',
+                        help='Stage 1 of two-stage SupCon: contrastive loss only, saves pretrained_encoder.pt')
+    parser.add_argument('--freeze_encoder', action='store_true',
+                        help='Freeze encoder weights; only classification head trains (stage 2 linear eval)')
     parser.add_argument('--use_triplet', action=argparse.BooleanOptionalAction, default=True,
                         help='Use Pose-Triplet tokenization (default: True, --no-use_triplet for flat)')
     parser.add_argument('--use_rope', action='store_true', help='Use RoPE instead of absolute positional encoding')

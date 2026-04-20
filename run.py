@@ -82,7 +82,6 @@ def get_experiments(epochs, pretrain_epochs):
                 '--save_dir', os.path.join(BASE_DIR, '4_triplet_supcon_ce'),
             ],
         },
-        # === Phase 2: Enhancements on the proposed method ===
         {
             'name': '5_triplet_rope_supcon_ce',
             'description': 'Proposed + RoPE positional encoding',
@@ -124,6 +123,23 @@ def get_experiments(epochs, pretrain_epochs):
                 '--pretrained_path', os.path.join(BASE_DIR, '7_triplet_rope_pt_supcon_ce', 'pretrained_encoder.pt'),
                 '--epochs', str(epochs),
                 '--save_dir', os.path.join(BASE_DIR, '7_triplet_rope_pt_supcon_ce'),
+            ],
+        },
+        {
+            'name': '8_triplet_supcon_then_ce',
+            'description': 'Two-stage SupCon (Khosla et al.): stage 1 SupCon-only pretrain, stage 2 frozen encoder + linear CE',
+            'pretrain_cmd': [
+                sys.executable, '-u', 'train.py', '--resume',
+                '--supcon_only',
+                '--epochs', str(pretrain_epochs),
+                '--save_dir', os.path.join(BASE_DIR, '8_triplet_supcon_then_ce'),
+            ],
+            'train_cmd': [
+                sys.executable, '-u', 'train.py', '--resume',
+                '--ce_only', '--freeze_encoder',
+                '--pretrained_path', os.path.join(BASE_DIR, '8_triplet_supcon_then_ce', 'pretrained_encoder.pt'),
+                '--epochs', str(epochs),
+                '--save_dir', os.path.join(BASE_DIR, '8_triplet_supcon_then_ce'),
             ],
         },
     ]
@@ -376,7 +392,7 @@ def main():
         selected = set(args.only)
         experiments = [e for i, e in enumerate(experiments, 1) if i in selected]
         if not experiments:
-            print(f"No experiments matched --only {args.only}. Valid range: 1-7.")
+            print(f"No experiments matched --only {args.only}. Valid range: 1-8.")
             return
 
     # Detect GPUs
@@ -443,7 +459,7 @@ def main():
     print(f"  best_model.pt  — best checkpoint (by val top-1)")
     print(f"  train.log      — full training output")
     if any(e['pretrain_cmd'] for e in experiments):
-        print(f"  pretrained_encoder.pt — pre-trained weights (experiments 6, 7)")
+        print(f"  pretrained_encoder.pt — pre-trained weights (experiments 6, 7, 8)")
 
     # Post-run logic depends on how we got here
     if user_killed:
