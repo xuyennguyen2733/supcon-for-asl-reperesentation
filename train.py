@@ -363,8 +363,15 @@ def main(args):
     start_epoch = 1
     epochs_without_improvement = 0
 
-    # Resume from checkpoint if --resume and one exists
-    resume_path = os.path.join(args.save_dir, 'last_checkpoint.pt')
+    # Resume from a stage-specific checkpoint so two-stage training doesn't collide
+    # (stage 1 and stage 2 have different trainable params, hence incompatible optimizer states).
+    if mode == 'supcon_only':
+        resume_filename = 'last_checkpoint_stage1.pt'
+    elif args.freeze_encoder:
+        resume_filename = 'last_checkpoint_stage2.pt'
+    else:
+        resume_filename = 'last_checkpoint.pt'
+    resume_path = os.path.join(args.save_dir, resume_filename)
     if args.resume and os.path.isfile(resume_path):
         resume = torch.load(resume_path, weights_only=False, map_location=device)
         model.load_state_dict(resume['model_state_dict'])
