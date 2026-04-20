@@ -35,8 +35,9 @@ STATE_RECORDING = 'RECORDING'
 STATE_SHOWING = 'SHOWING'
 
 # Thresholds
-MIN_FRAMES = 15          # minimum frames to run inference (~ 0.5s at 30fps)
-MAX_FRAMES = 60          # cut off and infer at this many frames
+MIN_FRAMES = 15          # first prediction at this many frames
+PREDICT_INTERVAL = 5     # re-predict every N additional frames
+MAX_FRAMES = 35          # final prediction and stop recording
 HANDS_GONE_TOLERANCE = 5 # consecutive no-hand frames before stopping
 SHOW_DURATION = 3.0      # seconds to hold predictions on screen
 
@@ -207,6 +208,39 @@ def draw_hud(frame, state, predictions, buffer_len, frame_count, model_status=No
     return frame
 
 
+def update_votes(vote_tracker, raw_predictions):
+    """Update the vote tracker with new predictions and return voted results.
+
+    Each model maintains its own vote history: {label: (count, total_confidence)}.
+    The displayed prediction per model is the label with highest vote count,
+    ties broken by accumulated confidence.
+
+    Returns list of (name, voted_label, voted_confidence, time_ms).
+    """
+    voted = []
+    for name, label, conf, ms in raw_predictions:
+        if name not in vote_tracker:
+            vote_tracker[name] = {}
+        votes = vote_tracker[name]
+
+        # Add vote
+        if label in votes:
+            count, total_conf = votes[label]
+            votes[label] = (count + 1, total_conf + conf)
+        else:
+            votes[label] = (1, conf)
+
+        # Pick winner: highest count, then highest accumulated confidence
+        winner = max(votes.items(), key=lambda x: (x[1][0], x[1][1]))
+        winner_label = winner[0]
+        winner_count, winner_total_conf = winner[1]
+        avg_conf = winner_total_conf / winner_count
+
+        voted.append((name, winner_label, avg_conf, ms))
+
+    return voted
+
+
 def run_all_models(models, tokens, device):
     """Run inference on all models sequentially, return list of (name, label, confidence, time_ms)."""
     results = []
@@ -357,6 +391,9 @@ def main(args):
     no_hands_streak = 0
     current_predictions = None  # list of (name, label, conf, ms)
     show_start_time = 0.0
+    last_predict_len = 0       # buffer length at last prediction
+    # Per-model vote tracking: {model_name: {label: (count, total_confidence)}}
+    vote_tracker = {}
 
     # Start webcam
     cap = cv2.VideoCapture(args.camera)
@@ -413,6 +450,31 @@ def main(args):
                 else:
                     no_hands_streak += 1
 
+                buf_len = len(poses_buffer)
+
+                # Incremental prediction: first at MIN_FRAMES, then every PREDICT_INTERVAL
+                should_predict = (
+                    models
+                    and buf_len >= MIN_FRAMES
+                    and (last_predict_len == 0 or buf_len >= last_predict_len + PREDICT_INTERVAL)
+                )
+
+                if should_predict:
+                    tokens = keypoints_to_tokens(
+                        poses_buffer, left_hands_buffer, right_hands_buffer
+                    ).to(device)
+                    raw_predictions = run_all_models(models, tokens, device)
+                    current_predictions = update_votes(vote_tracker, raw_predictions)
+                    last_predict_len = buf_len
+
+                    # Log to console
+                    ts = time.strftime('%H:%M:%S')
+                    print(f"  [{ts}] Vote update ({buf_len} frames):", end='')
+                    for name, label, conf, ms in current_predictions:
+                        print(f"  {label}({conf:.0%})", end='')
+                    print()
+
+                # Check stop conditions
                 should_stop = False
                 if no_hands_streak > HANDS_GONE_TOLERANCE:
                     trim = min(no_hands_streak, len(poses_buffer))
@@ -420,7 +482,7 @@ def main(args):
                     left_hands_buffer = left_hands_buffer[:-trim]
                     right_hands_buffer = right_hands_buffer[:-trim]
                     should_stop = True
-                elif len(poses_buffer) >= MAX_FRAMES:
+                elif buf_len >= MAX_FRAMES:
                     should_stop = True
 
                 if should_stop:
@@ -437,19 +499,17 @@ def main(args):
                             reconstruct_video_from_keypoints(kp, save_dir, filename)
                             print(f"  Saved keypoints: {save_dir}/{filename}")
 
-                        if models:
-                            tokens = keypoints_to_tokens(
-                                poses_buffer, left_hands_buffer, right_hands_buffer
-                            ).to(device)
-                            current_predictions = run_all_models(models, tokens, device)
+                        # Final prediction using votes
+                        if models and current_predictions:
+                            ts = time.strftime('%H:%M:%S')
+                            print(f"\n[{ts}] Final predictions ({len(poses_buffer)} frames):")
+                            for name, label, conf, ms in current_predictions:
+                                votes = vote_tracker.get(name, {})
+                                vote_str = ', '.join(f'{l}:{c}' for l, (c, _) in
+                                                     sorted(votes.items(), key=lambda x: -x[1][0]))
+                                print(f"  {name:25s} {label:15s} {conf:.0%}  votes: {vote_str}")
                             state = STATE_SHOWING
                             show_start_time = time.time()
-
-                            # Log to console
-                            ts = time.strftime('%H:%M:%S')
-                            print(f"\n[{ts}] Predictions ({len(poses_buffer)} frames):")
-                            for name, label, conf, ms in current_predictions:
-                                print(f"  {name:25s} {label:15s} {conf:.0%} ({ms:.0f}ms)")
                         else:
                             state = STATE_IDLE
                     else:
@@ -459,6 +519,8 @@ def main(args):
                     left_hands_buffer = []
                     right_hands_buffer = []
                     no_hands_streak = 0
+                    last_predict_len = 0
+                    vote_tracker = {}
 
             elif state == STATE_SHOWING:
                 # Keep accumulating frames while showing results
@@ -494,6 +556,8 @@ def main(args):
                 left_hands_buffer = []
                 right_hands_buffer = []
                 no_hands_streak = 0
+                last_predict_len = 0
+                vote_tracker = {}
                 current_predictions = None
 
     cap.release()
