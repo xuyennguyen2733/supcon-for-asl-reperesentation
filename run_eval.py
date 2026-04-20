@@ -140,7 +140,7 @@ def evaluate_model(checkpoint_path, test_loader, device, train_label_names):
     print(f"  [{tag}] Evaluating {description}...")
 
     # Load checkpoint and infer architecture from saved weights
-    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    checkpoint = torch.load(checkpoint_path, weights_only=False, map_location=device)
     state = checkpoint['model_state_dict']
     num_classes = state['classification_head.bias'].shape[0]
 

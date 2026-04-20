@@ -273,7 +273,7 @@ def main(args):
 
     # Load pre-trained encoder weights if provided
     if args.pretrained_path:
-        checkpoint = torch.load(args.pretrained_path, weights_only=False)
+        checkpoint = torch.load(args.pretrained_path, weights_only=False, map_location=device)
         model.load_state_dict(checkpoint['encoder_state_dict'], strict=False)
         print(f"Loaded pre-trained encoder from {args.pretrained_path} "
               f"(epoch {checkpoint['epoch']}, loss {checkpoint['loss']:.6f})")
@@ -311,7 +311,7 @@ def main(args):
     # Resume from checkpoint if --resume and one exists
     resume_path = os.path.join(args.save_dir, 'last_checkpoint.pt')
     if args.resume and os.path.isfile(resume_path):
-        resume = torch.load(resume_path, weights_only=False)
+        resume = torch.load(resume_path, weights_only=False, map_location=device)
         model.load_state_dict(resume['model_state_dict'])
         optimizer.load_state_dict(resume['optimizer_state_dict'])
         scheduler.load_state_dict(resume['scheduler_state_dict'])

@@ -35,7 +35,7 @@ STATE_RECORDING = 'RECORDING'
 STATE_SHOWING = 'SHOWING'
 
 # Thresholds
-MIN_FRAMES = 30          # minimum frames to run inference (~ 1s at 30fps)
+MIN_FRAMES = 15          # minimum frames to run inference (~ 0.5s at 30fps)
 MAX_FRAMES = 60          # cut off and infer at this many frames
 HANDS_GONE_TOLERANCE = 5 # consecutive no-hand frames before stopping
 SHOW_DURATION = 3.0      # seconds to hold predictions on screen
@@ -259,7 +259,7 @@ def load_models(checkpoint_paths, device):
             train_dir = os.path.join('data', 'keypoints', 'train')
             label_names = sorted(os.listdir(train_dir))
 
-        checkpoint = torch.load(cp, weights_only=False)
+        checkpoint = torch.load(cp, weights_only=False, map_location=device)
         state = checkpoint['model_state_dict']
         trained_classes = state['classification_head.bias'].shape[0]
 
@@ -323,7 +323,14 @@ def main(args):
         # Collect real checkpoint paths
         checkpoint_paths = []
         if args.checkpoints:
-            checkpoint_paths = args.checkpoints
+            # Scan folder for child directories containing best_model.pt
+            if os.path.isdir(args.checkpoints):
+                for name in sorted(os.listdir(args.checkpoints)):
+                    cp = os.path.join(args.checkpoints, name, 'best_model.pt')
+                    if os.path.isfile(cp):
+                        checkpoint_paths.append(cp)
+            else:
+                print(f"Warning: {args.checkpoints} is not a directory.")
         elif args.checkpoint:
             checkpoint_paths = [args.checkpoint]
 
@@ -482,8 +489,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Real-time ASL sign recognition from webcam')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to a single model checkpoint')
-    parser.add_argument('--checkpoints', type=str, nargs='+', default=None,
-                        help='Paths to multiple model checkpoints (compared side by side)')
+    parser.add_argument('--checkpoints', type=str, default=None,
+                        help='Path to folder containing model subfolders with best_model.pt')
     parser.add_argument('--camera', type=int, default=0, help='Camera index')
     parser.add_argument('--smoke_test', type=int, nargs='?', const=7, default=None,
                         help='Run with fake models to test UI (default: 7 models)')

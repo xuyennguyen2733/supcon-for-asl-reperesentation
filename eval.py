@@ -201,7 +201,7 @@ def main(args):
                              collate_fn=collate_eval, num_workers=0)
 
     # Load checkpoint and infer architecture from saved weights
-    checkpoint = torch.load(args.checkpoint, weights_only=False)
+    checkpoint = torch.load(args.checkpoint, weights_only=False, map_location=device)
     state = checkpoint['model_state_dict']
     trained_classes = state['classification_head.bias'].shape[0]
 
